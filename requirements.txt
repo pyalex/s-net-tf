@@ -1,0 +1,6 @@
+tensorflow-gpu==1.8.0
+tqdm
+ujson
+spacy
+click
+numpy
