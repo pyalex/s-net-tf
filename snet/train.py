@@ -268,7 +268,7 @@ def model_fn(features, labels, mode, params):
     loss = tf.reduce_mean(loss1 + loss2)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
-        optimizer = tf.train.AdadeltaOptimizer(learning_rate=0.5)
+        optimizer = tf.train.AdadeltaOptimizer(learning_rate=1)
         global_step = tf.train.get_or_create_global_step()
         train_op = optimizer.minimize(loss=loss, global_step=global_step)
 
@@ -351,7 +351,7 @@ if __name__ == '__main__':
         #     serving_input_receiver_fn=serving_input_fn,
         #     exports_to_keep=1,
         #     as_text=True)],
-        steps=1,
+        steps=10,
         throttle_secs=3600
     )
 
