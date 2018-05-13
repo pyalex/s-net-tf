@@ -1,6 +1,9 @@
 import tensorflow as tf
 import multiprocessing
 import numpy as np
+import itertools
+import click
+import os
 
 from tensorflow.contrib.seq2seq import BahdanauAttention
 from tensorflow.contrib.training import HParams
@@ -8,6 +11,7 @@ from tensorflow.contrib.lookup import lookup_ops
 from tensorflow.python.estimator.model_fn import EstimatorSpec
 from tensorflow.python.layers.core import Dense
 from tensorflow.python.ops.rnn_cell_impl import DropoutWrapper, GRUCell, RNNCell, MultiRNNCell
+from tensorflow.python.client import device_lib
 
 from snet.utils import helpers
 
@@ -42,6 +46,21 @@ char_embeddings_np = load_embeddings('data/glove.840B.300d-char.txt')
 word_embeddings_np = np.load('data/glove.42B.300d.np.npy')
 
 
+def get_devices():
+    if os.environ.get('TF_DEVICES'):
+        devices = os.environ.get('TF_DEVICES').split(',')
+    else:
+        local_device_protos = device_lib.list_local_devices()
+        devices = [x.name for x in local_device_protos if x.device_type == 'GPU']
+
+    if not devices:
+        devices = ['/cpu:0']
+
+    print('Available devices:', devices)
+
+    return itertools.cycle(devices)
+
+
 def input_fn(tf_files,
              hparams,
              mode=tf.estimator.ModeKeys.EVAL,
@@ -59,7 +78,10 @@ def input_fn(tf_files,
         question_char_length=tf.FixedLenFeature((hparams.question_max_words,), tf.int64),
         y1=tf.FixedLenFeature((hparams.passage_max_words,), tf.float32),
         y2=tf.FixedLenFeature((hparams.passage_max_words,), tf.float32),
-        answer_tokens=tf.VarLenFeature(tf.string)
+        answer_tokens=tf.VarLenFeature(tf.string),
+        passage_ranks=tf.FixedLenFeature((hparams.passage_count,), tf.float32),
+        partitions=tf.FixedLenFeature((hparams.passage_max_words,), tf.int64),
+        partitions_len=tf.FixedLenFeature((hparams.passage_count,), tf.int64)
     )
 
     def parse(example):
@@ -69,7 +91,9 @@ def input_fn(tf_files,
         features['question_chars'] = tf.reshape(features['question_chars'],
                                                 (hparams.question_max_words, hparams.question_max_chars))
 
-        label = (features.pop('y1'), features.pop('y2'))
+        features['partitions'] = tf.cast(features['partitions'], tf.int32)
+
+        label = (features.pop('y1'), features.pop('y2'), features.pop('passage_ranks'))
         return features, label
 
     ds = tf.data.TFRecordDataset(tf_files)
@@ -97,6 +121,12 @@ def biGRU(input, input_length, params, layers=3):
     return tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, input,
                                            sequence_length=input_length,
                                            dtype=tf.float32)
+
+
+def pad_to_shape_2d(t, shape, axis=0):
+    t = tf.concat([t, tf.zeros(shape)], axis=axis)[:shape[0].value, :shape[1].value]
+    t.set_shape(shape)
+    return t
 
 
 class AttentionWrapper(RNNCell):
@@ -143,7 +173,38 @@ class GatedAttentionWrapper(AttentionWrapper):
 
     def _compute_attention(self, input, state):
         attention = super(GatedAttentionWrapper, self)._compute_attention(input, state)
-        return self._gate(attention) * attention
+        gate = self._gate(attention)
+        return gate * attention
+
+
+class ReusableBahdanauAttention(BahdanauAttention):
+    def __init__(self,
+                 num_units,
+                 memory,
+                 memory_sequence_length=None,
+                 normalize=False,
+                 probability_fn=None,
+                 score_mask_value=None,
+                 query_layer=None,
+                 memory_layer=None,
+                 name="BahdanauAttention"):
+
+        if probability_fn is None:
+            probability_fn = tf.nn.softmax
+
+        wrapped_probability_fn = lambda score, _: probability_fn(score)
+
+        super(BahdanauAttention, self).__init__(
+            query_layer=query_layer,
+            memory_layer=memory_layer,
+            memory=memory,
+            probability_fn=wrapped_probability_fn,
+            memory_sequence_length=memory_sequence_length,
+            score_mask_value=score_mask_value,
+            name=name)
+        self._num_units = num_units
+        self._normalize = normalize
+        self._name = name
 
 
 def encoder(word_emb, word_length, char_emb, char_length, params):
@@ -163,7 +224,7 @@ def encoder(word_emb, word_length, char_emb, char_length, params):
 
 def pointer_net(passage, passage_length, question_pool, params):
     attention_cell = BahdanauAttention(params.units, passage, passage_length,
-                                       name="pointer_attention", probability_fn=tf.identity)
+                                       name="pointer_attention", probability_fn=tf.identity, score_mask_value=0)
     p1, _ = attention_cell(question_pool, None)
 
     context = tf.reduce_sum(tf.expand_dims(tf.nn.softmax(p1), -1) * passage, 1)
@@ -183,14 +244,15 @@ def f1_metric(p1, p2, answers, passage, hparams, table):
 
     f1 = []
     for p1_, p2_, answer, context in zip(p1, p2, answers, passage):
-        p1_ = tf.Print(p1_, [p1_, p1_, answer, context], message='f1', summarize=1000)
+        answer = tf.boolean_mask(answer, tf.not_equal(answer, ''))
         prediction = table.lookup(context[p1_:p2_])
 
-        prediction = tf.Print(prediction, [prediction, answer], message='prediction', summarize=1000)
         intersection = tf.size(tf.sets.set_intersection(tf.expand_dims(prediction, 0),
                                                         tf.expand_dims(answer, 0)))
-        precision = intersection / tf.size(answer)
+
+        precision = intersection / tf.size(prediction)
         recall = intersection / tf.size(answer)
+
         f1.append(tf.cond(precision + recall > 0,
                           lambda: 2 * precision * recall / (precision + recall),
                           lambda: tf.constant(.0, dtype=tf.float64)))
@@ -201,17 +263,22 @@ def f1_metric(p1, p2, answers, passage, hparams, table):
 
 
 def model_fn(features, labels, mode, params):
+    Attention = BahdanauAttention
+
     word_embeddings_placeholder = tf.placeholder(shape=[params.vocab_size, params.emb_size], dtype=tf.float32)
     char_embeddings_placeholder = tf.placeholder(shape=[params.char_vocab_size, params.char_emb_size], dtype=tf.float32)
 
     question_words_length = features['question_length']
     passage_words_length = features['passage_length']
 
-    word_embeddings = tf.create_partitioned_variables(shape=[params.vocab_size, params.emb_size],
-                                                      slicing=[10, 1],
-                                                      initializer=word_embeddings_placeholder,
-                                                      trainable=False, name="word_embeddings")
-    char_embeddings = tf.Variable(char_embeddings_placeholder, trainable=False, name="char_embeddings")
+    devices = get_devices()
+
+    with tf.device('/cpu:0'):
+        word_embeddings = tf.create_partitioned_variables(shape=[params.vocab_size, params.emb_size],
+                                                          slicing=[10, 1],
+                                                          initializer=word_embeddings_placeholder,
+                                                          trainable=False, name="word_embeddings")
+        char_embeddings = tf.Variable(char_embeddings_placeholder, trainable=False, name="char_embeddings")
 
     question_words_emb = tf.nn.embedding_lookup(word_embeddings, features['question_words'], partition_strategy='div')
     question_chars_emb = tf.nn.embedding_lookup(char_embeddings, features['question_chars'])
@@ -219,33 +286,63 @@ def model_fn(features, labels, mode, params):
     passage_words_emb = tf.nn.embedding_lookup(word_embeddings, features['passage_words'], partition_strategy='div')
     passage_chars_emb = tf.nn.embedding_lookup(char_embeddings, features['passage_chars'])
 
-    with tf.variable_scope('question_encoding'):
-        question_enc = encoder(question_words_emb, question_words_length, question_chars_emb,
-                               features['question_char_length'], params)
+    with tf.device(next(devices)):
+        with tf.variable_scope('question_encoding'):
+            question_enc = encoder(question_words_emb, question_words_length, question_chars_emb,
+                                   features['question_char_length'], params)
 
-    with tf.variable_scope('passage_encoding'):
-        passage_enc = encoder(passage_words_emb, passage_words_length, passage_chars_emb,
-                              features['passage_char_length'], params)
+        with tf.variable_scope('passage_encoding'):
+            passage_enc = encoder(passage_words_emb, passage_words_length, passage_chars_emb,
+                                  features['passage_char_length'], params)
     # question_enc = tf.Print(question_enc, [question_enc], summarize=1000)
 
-    with tf.variable_scope('attention'):
-        cell = GatedAttentionWrapper(
-            BahdanauAttention(params.units, question_enc, question_words_length),
-            GRUCell(params.units, name="attention_gru"))
+    with tf.device(next(devices)):
+        with tf.variable_scope('attention'):
+            cell = GatedAttentionWrapper(
+                Attention(params.units, question_enc, question_words_length),
+                GRUCell(params.units, name="attention_gru"))
 
-        passage_repr, _ = tf.nn.dynamic_rnn(cell, passage_enc, passage_words_length, dtype=tf.float32)
+            passage_repr, _ = tf.nn.dynamic_rnn(cell, passage_enc, passage_words_length, dtype=tf.float32)
 
-    # passage_repr = tf.Print(passage_repr, [passage_repr], message='repr', summarize=50)
+        with tf.variable_scope('pointer'):
+            pool_param = tf.get_variable('pool_param', shape=(params.units,), initializer=tf.initializers.ones)
+            pool_param = tf.reshape(tf.tile(pool_param, [params.batch_size]), (-1, params.units))
 
-    with tf.variable_scope('pointer'):
-        pool_param = tf.get_variable('pool_param', shape=(params.units,), initializer=tf.initializers.ones)
-        pool_param = tf.reshape(tf.tile(pool_param, [params.batch_size]), (-1, params.units))
+            question_alignments, _ = Attention(params.units, question_enc,
+                                                       question_words_length, name="question_align")(pool_param, None)
+            question_pool = tf.reduce_sum(tf.expand_dims(question_alignments, -1) * question_enc, 1)
 
-        question_alignments, _ = BahdanauAttention(params.units, question_enc,
-                                                   question_words_length, name="question_align")(pool_param, None)
-        question_pool = tf.reduce_sum(tf.expand_dims(question_alignments, -1) * question_enc, 1)
+            logits1, logits2 = pointer_net(passage_repr, passage_words_length, question_pool, params)
 
-        logits1, logits2 = pointer_net(passage_repr, passage_words_length, question_pool, params)
+    with tf.variable_scope('passage_ranking'):
+        passages = tf.dynamic_partition(passage_repr, features['partitions'], params.passage_count + 1)
+
+        W_g = Dense(params.units, activation=tf.tanh, use_bias=False)
+        v_g = Dense(1, use_bias=False)
+
+        memory_layer = Dense(
+            params.units, name="memory_layer", use_bias=False, dtype=tf.float32
+        )
+        query_layer = Dense(
+            params.units, name="query_layer", use_bias=False, dtype=tf.float32
+        )
+        g = []
+
+        for i in range(params.passage_count):
+            passage_i = tf.split(passages[i], features['partitions_len'][:, i])
+            passage_i = [pad_to_shape_2d(p, (tf.Dimension(params.passage_max_len), p.shape[1])) for p in passage_i]
+            passage_i = tf.stack(passage_i)
+
+            passage_alignment, _ = ReusableBahdanauAttention(
+                params.units, passage_i, features['partitions_len'][:, i],
+                memory_layer=memory_layer, query_layer=query_layer, name="passage_align")(question_pool, None)
+
+            passage_pool = tf.reduce_sum(tf.expand_dims(passage_alignment, -1) * passage_i, 1)
+
+            g_i = v_g(W_g(tf.concat([question_pool, passage_pool], -1)))
+            g.append(g_i)
+
+        g = tf.concat(g, -1)
 
     outer = tf.matmul(tf.expand_dims(tf.nn.softmax(logits1), axis=2),
                       tf.expand_dims(tf.nn.softmax(logits2), axis=1))
@@ -253,19 +350,19 @@ def model_fn(features, labels, mode, params):
     p1 = tf.argmax(tf.reduce_max(outer, axis=2), axis=1)
     p2 = tf.argmax(tf.reduce_max(outer, axis=1), axis=1)
 
-    answer_start, answer_end = labels
-    # y1 = tf.argmax(labels, axis=-1)
-    # y2 = params.passage_max_words - tf.argmax(tf.reverse(labels, axis=-1))
+    answer_start, answer_end, passage_rank = labels
 
-    loss1 = tf.nn.softmax_cross_entropy_with_logits_v2(logits=tf.clip_by_value(logits1, 1e-10, 1.0),
+    loss1 = tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits1,
                                                        labels=tf.stop_gradient(answer_start))
-    loss2 = tf.nn.softmax_cross_entropy_with_logits_v2(logits=tf.clip_by_value(logits2, 1e-10, 1.0),
+    loss2 = tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits2,
                                                        labels=tf.stop_gradient(answer_end))
 
-    loss1 = tf.Print(loss1, [tf.argmax(answer_start, -1), tf.argmax(answer_end, -1),
-                             tf.reduce_mean(loss1), tf.reduce_mean(loss2)], message="truth")
+    loss3 = tf.nn.softmax_cross_entropy_with_logits_v2(logits=g, labels=tf.stop_gradient(passage_rank))
 
-    loss = tf.reduce_mean(loss1 + loss2)
+    loss1 = tf.Print(loss1, [tf.argmax(answer_start, -1), tf.argmax(answer_end, -1),
+                             tf.reduce_mean(loss1), tf.reduce_mean(loss2), tf.reduce_mean(loss3)], message="loss")
+
+    loss = params.r * tf.reduce_mean(loss1 + loss2) + (1 - params.r) * tf.reduce_mean(loss3)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
         optimizer = tf.train.AdadeltaOptimizer(learning_rate=1)
@@ -279,45 +376,59 @@ def model_fn(features, labels, mode, params):
         )
 
     if mode == tf.estimator.ModeKeys.EVAL:
-        table = lookup_ops.index_to_string_table_from_file(hparams.word_vocav_file,
+        table = lookup_ops.index_to_string_table_from_file(params.word_vocav_file,
                                                            value_column_index=0, delimiter=" ")
         return EstimatorSpec(
-            mode, loss=loss, eval_metric_ops={'f1': f1_metric(p1, p2, features['answer_tokens'],
-                                                              features['passage_words'], hparams, table)}
+            mode, loss=loss, eval_metric_ops={'f1': f1_metric(p1, p2,
+                                                              features['answer_tokens'],
+                                                              features['passage_words'], params, table)}
         )
 
 
-if __name__ == '__main__':
+@click.command()
+@click.option('--model-dir')
+@click.option('--train-data', default='data/train.tf')
+@click.option('--eval-data', default='data/train.tf')
+@click.option('--word-embeddings', default='data/glove.42B.300d.txt')
+@click.option('--char-embeddings', default='data/glove.840B.300d-char.txt')
+def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings):
     tf.logging.set_verbosity(tf.logging.INFO)
 
     hparams = HParams(
         num_epochs=10,
-        batch_size=32,
-        max_steps=1000,
+        batch_size=16,
+        max_steps=10000,
         units=150,
         dropout=0.0,
         question_max_words=30,
         question_max_chars=16,
-        passage_max_words=400,
+        passage_max_words=800,
         passage_max_chars=16,
         vocab_size=word_embeddings_np.shape[0],
         emb_size=300,
         char_vocab_size=char_embeddings_np.shape[0],
         char_emb_size=300,
-        word_vocav_file='data/glove.42B.300d.txt'
+        word_vocav_file=word_embeddings,
+        passage_count=10,
+        passage_max_len=120,
+        r=0.8
     )
 
-    model_dir = 'trained_models/{}-init2'.format('snet')
+    config = tf.ConfigProto()
+    # config.intra_op_parallelism_threads = 32
+    # config.inter_op_parallelism_threads = 32
+
     run_config = tf.estimator.RunConfig(
         log_step_count_steps=1,
         tf_random_seed=19830610,
         model_dir=model_dir,
-        save_summary_steps=1
+        save_summary_steps=1,
+        session_config=config
     )
 
     with tf.Session() as sess:
         test = input_fn(
-            ['data/train.tf'],
+            [train_data],
             hparams=hparams,
             mode=tf.estimator.ModeKeys.EVAL,
             batch_size=hparams.batch_size
@@ -329,7 +440,7 @@ if __name__ == '__main__':
 
     train_spec = tf.estimator.TrainSpec(
         input_fn=lambda: input_fn(
-            ['data/train.tf'],
+            [train_data],
             hparams=hparams,
             mode=tf.estimator.ModeKeys.TRAIN,
             num_epochs=hparams.num_epochs,
@@ -341,7 +452,7 @@ if __name__ == '__main__':
 
     eval_spec = tf.estimator.EvalSpec(
         input_fn=lambda: input_fn(
-            ['data/train.tf'],
+            [eval_data],
             hparams=hparams,
             mode=tf.estimator.ModeKeys.EVAL,
             batch_size=hparams.batch_size
@@ -351,8 +462,12 @@ if __name__ == '__main__':
         #     serving_input_receiver_fn=serving_input_fn,
         #     exports_to_keep=1,
         #     as_text=True)],
-        steps=10,
+        steps=1,
         throttle_secs=3600
     )
 
     tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
+
+
+if __name__ == '__main__':
+    main()
