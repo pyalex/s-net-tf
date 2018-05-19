@@ -1,9 +1,8 @@
-import csv
 import ujson
 import typing
 import numpy as np
 from tqdm import tqdm
-from collections import namedtuple
+from collections import namedtuple, Counter
 import spacy
 import click
 import itertools
@@ -12,99 +11,23 @@ import tensorflow as tf
 
 from snet.utils import helpers
 
-#from ..environment import current_env
-
 nlp = spacy.blank("en")
 
 example = namedtuple('example', ['passage_tokens', 'passage_chars',
                                  'question_tokens', 'question_chars',
-                                 'answer_start', 'answer_end', 'answer_tokens'])
+                                 'answer_start', 'answer_end', 'answer_tokens',
+                                 'partitions', 'partitions_len',
+                                 'passage_ranks'])
 
-# def fix_sentences(passage):
-#     r = re.compile("([\.,])([a-z])", re.I)
-#     return r.sub('\1 \2', passage)
-#
-# tokenize = tf.keras.preprocessing.text.text_to_word_sequence
-#
-#
-# def clean(text):
-#     return " ".join(tokenize(fix_sentences(text)))
-
-known_words = set()
+_known_words = Counter()
 
 
 def word_tokenize(sent):
-    global known_words
-
     doc = nlp(sent)
     words = [token.text for token in doc]
-    known_words |= set(words)
+    for word in words:
+        _known_words[word] += 1
     return words
-
-
-# def json2csv(filename, out):
-#     d = ujson.loads(open(filename).read())
-#
-#     def shortest(lst):
-#         return sorted(lst, key=len)[0]
-#
-#     with open(out, 'w') as f:
-#         w = csv.DictWriter(f, fieldnames=['id', 'question', 'answer', 'wellFormedAnswer', 'passage'])
-#         w.writeheader()
-#         w.writerows((dict(id=l['query_id'],
-#                           question=clean(l['query']),
-#                           passage=clean(' '.join([p['passage_text'] for p in l['passages']])),
-#                           answer=clean(shortest(l['answers'])),
-#                           wellFormedAnswer=clean(l['wellFormedAnswers'][0]))
-#                      for l in d))
-
-
-# def find_answer(p_tokens, a_tokens):
-#     hot_encoded = np.zeros(current_env().passage_max_length, dtype=np.float32)
-#
-#     def match(n_gram):
-#         for i in range(len(p_tokens)):
-#             if p_tokens[i:i+len(n_gram)] == n_gram:
-#                 print(p_tokens[i:i+len(n_gram)], n_gram)
-#                 return i
-#
-#     for n_gram_size in range(len(a_tokens), 0, -1):
-#         n_grams = [a_tokens[i:i+n_gram_size] for i in range(0, len(a_tokens) - n_gram_size + 1)]
-#         # print(n_gram_size, n_grams)
-#         matches = [match(n_gram) for n_gram in n_grams]
-#
-#         if not matches or not all(matches):
-#             continue
-#
-#         # print(matches, n_gram_size)
-#         for m in matches:
-#             for i in range(n_gram_size):
-#                 hot_encoded[m + i] = 1.0
-#
-#         break
-#
-#     return hot_encoded
-#
-#
-# def encode_answers(filename, out):
-#     f = csv.DictReader(open(filename))
-#     result = [find_answer(tokenize(line['passage'])[:1000], tokenize(line['answer'])) for line in f]
-#
-#     np.save(out, np.stack(result))
-
-
-
-def save():
-    r = csv.DictReader('data.csv')
-    tokens = {w for l in r for w in word_tokenize(fix_sentences(l['passage']))}
-    answer_tokens = {w for l in r for w in word_tokenize(l['answer'])}
-    f = open('glove.840B.300d.txt')
-
-    with open('glove.reduced.txt', 'w') as f2:
-        for line in f:
-            word = line.split(' ', 1)[0]
-            if word in tokens or word in answer_tokens:
-                f2.write(line)
 
 
 def find_answer(passage, answer):
@@ -168,10 +91,11 @@ def find_answer(passage, answer):
     return answer_start, answer_end + 1
 
 
-def load(input_filename) -> typing.Iterator[example]:
-    items = ujson.loads(open(input_filename).read())
+def load(input_filename, passage_words_max=800) -> typing.Iterator[example]:
+    f = open(input_filename, 'r')
+    items = ujson.loads(f.readline())
 
-    def shortest(lst):
+    def shortest(lst: typing.List[str]) -> str:
         return sorted(lst, key=len)[0]
 
     def iter_find(find, items):
@@ -181,32 +105,58 @@ def load(input_filename) -> typing.Iterator[example]:
             yield pos, pos + len(i)
 
     def clean(text):
-        return text.replace("''", '" ').replace("``", '" ')
+        return text.replace("''", '" ').replace("``", '" ').lower().strip(' .').lstrip('()_')
 
-    for item in tqdm(items):
-        if not item['answers']:
+    for key, passages in items['passages'].items():
+        answers = items['answers'][key]
+        if not answers or 'no answer' in answers[0].lower():
             continue
 
-        answer = shortest(item['answers'])
+        partitions = []
+        partitions_len = []
+        passage_tokens = []
 
-        full_passage = ' '.join([clean(p['passage_text']) for p in item['passages']])
-        passage_tokens = word_tokenize(full_passage)
+        for idx, p in enumerate(passages):
+            text = clean(p['passage_text'])
+            tokens = word_tokenize(text)
+
+            tokens = tokens[:passage_words_max - len(passage_tokens)]
+
+            passage_tokens.extend(tokens)
+            partitions.extend([idx] * len(tokens))
+            partitions_len.append(len(tokens))
+
+        if not all(partitions_len) or len(partitions_len) != 10:
+            continue
+
+        passage_ranks = [p['is_selected'] for p in passages]
         passage_chars = [list(token) for token in passage_tokens]
 
         # spans = list(iter_find(full_passage.find, passage_tokens))
 
-        question = clean(item['query'])
+        question = clean(items['query'][key])
         question_tokens = word_tokenize(question)
         question_chars = [list(token) for token in question_tokens]
 
-        answer_tokens = word_tokenize(answer)
-        answer_start, answer_end = find_answer(passage_tokens, answer_tokens)
+        answer_candidates = []
 
-        if not answer_start or answer_end == len(passage_tokens):
+        for answer in answers:
+            answer = clean(answer)
+            tokens = word_tokenize(answer)
+            start, end = find_answer(passage_tokens, tokens)
+
+            if end - start > 2 * len(tokens):
+                continue
+
+            answer_candidates.append((tokens, (start, end)))
+
+        if not answer_candidates:
             continue
 
+        answer_tokens, (answer_start, answer_end) = sorted(answer_candidates, key=lambda x: len(x[0]))[0]
+
         yield example(passage_tokens, passage_chars, question_tokens, question_chars,
-                      answer_start, answer_end, answer_tokens)
+                      answer_start, answer_end, answer_tokens, partitions, partitions_len, passage_ranks)
 
 
 @click.group()
@@ -214,28 +164,47 @@ def cli():
     pass
 
 
+UNK = 'unk'
+SOS = '<s>'
+EOS = '</s>'
+
+
 @cli.command()
-@click.option('--embeddings', default='data/glove.840B.300d.txt')
-@click.option('--output')
+@click.option('--embeddings', default='data/glove.6B.300d.txt')
+@click.option('--limit', default=None, type=int)
+@click.option('--most-common', default=30000, type=int)
+@click.option('--most-common-output', default=None, type=str)
+@click.option('--reduce_output', default=None, type=str)
 @click.argument('data-file')
-def reduce_embeddings(embeddings, output, data_file):
+def vocab(embeddings, limit, most_common, most_common_output, reduce_output, data_file):
     examples = load(data_file)
+    if limit:
+        examples = itertools.islice(examples, 0, limit)
+
     for _ in tqdm(examples):
         pass
 
-    counter = 0
+    words = [UNK, SOS, EOS] + [word for (word, _) in _known_words.most_common(most_common - 3)]
 
-    with open(output, 'w') as output:
-        with open(embeddings, 'r') as emb:
-            for line in emb:
-                word, _ = line.split(" ", 1)
-                if word not in known_words:
-                    continue
+    if most_common_output:
+        with open(most_common_output, 'w') as f:
+            for word in words:
+                f.write(word + '\n')
 
-                output.write(line)
-                counter += 1
+    if reduce_output:
+        counter = 0
 
-    print('reduced to', counter, 'lines')
+        with open(reduce_output, 'w') as output:
+            with open(embeddings, 'r') as emb:
+                for line in emb:
+                    word, _ = line.split(" ", 1)
+                    if word not in _known_words:
+                        continue
+
+                    output.write(line)
+                    counter += 1
+
+        print('reduced to', counter, 'lines')
 
 
 def load_embeddings(filename):
@@ -251,18 +220,18 @@ def load_embeddings(filename):
 
 
 @cli.command()
-@click.option('--passage-words-max', default=1000, type=int)
+@click.option('--passage-words-max', default=800, type=int)
 @click.option('--question-words-max', default=30, type=int)
+@click.option('--passage-count', default=10, type=int)
 @click.option('--char-max', default=16, type=int)
-@click.option('--word-embedding', default='data/glove.reduced.txt')
+@click.option('--word-embedding', default='data/glove.42B.300d.txt')
 @click.option('--char-embedding', default='data/glove.840B.300d-char.txt')
-@click.option('--limit', default=100)
+@click.option('--limit', default=None, type=int)
 @click.option('--tf-output')
 @click.argument('data-file')
-def preprocess(tf_output, passage_words_max, question_words_max, char_max,
-               word_embedding, char_embedding, limit, data_file):
-
-    examples = load(data_file)
+def extraction(tf_output, passage_words_max, question_words_max, passage_count,
+               char_max, word_embedding, char_embedding, limit, data_file):
+    examples = load(data_file, passage_words_max=passage_words_max)
     if limit:
         examples = itertools.islice(examples, 0, limit)
 
@@ -286,17 +255,17 @@ def preprocess(tf_output, passage_words_max, question_words_max, char_max,
         if len(example.question_tokens) > question_words_max:
             continue
 
-        passage_words = np.zeros((passage_words_max, ), dtype=np.int32)
-        question_words = np.zeros((question_words_max, ), dtype=np.int32)
+        passage_words = np.zeros((passage_words_max,), dtype=np.int32)
+        question_words = np.zeros((question_words_max,), dtype=np.int32)
 
         passage_chars = np.zeros((passage_words_max, char_max), dtype=np.int32)
         question_chars = np.zeros((question_words_max, char_max), dtype=np.int32)
 
-        answer_start = np.zeros((passage_words_max, ), dtype=np.float32)
-        answer_end = np.zeros((passage_words_max, ), dtype=np.float32)
+        answer_start = np.zeros((passage_words_max,), dtype=np.float32)
+        answer_end = np.zeros((passage_words_max,), dtype=np.float32)
 
         convert_words(example.passage_tokens[:passage_words_max], passage_words)
-        convert_words(example.question_tokens[:question_words_max],  question_words)
+        convert_words(example.question_tokens[:question_words_max], question_words)
 
         convert_chars(example.passage_chars[:passage_words_max], passage_chars)
         convert_chars(example.question_chars[:question_words_max], question_chars)
@@ -304,8 +273,8 @@ def preprocess(tf_output, passage_words_max, question_words_max, char_max,
         answer_start[example.answer_start] = 1.0
         answer_end[example.answer_end] = 1.0
 
-        passage_char_length = np.zeros((passage_words_max, ), dtype=np.int32)
-        question_char_length = np.zeros((question_words_max, ), dtype=np.int32)
+        passage_char_length = np.zeros((passage_words_max,), dtype=np.int32)
+        question_char_length = np.zeros((question_words_max,), dtype=np.int32)
 
         for idx, token in enumerate(example.passage_chars[:passage_words_max]):
             passage_char_length[idx] = min(len(token), char_max)
@@ -317,18 +286,34 @@ def preprocess(tf_output, passage_words_max, question_words_max, char_max,
 
         answer_bytes = [word.encode('utf-8') for word in example.answer_tokens]
 
+        passage_ranks = np.pad(example.passage_ranks,
+                               (0, passage_count - len(example.passage_ranks)),
+                               mode='constant', constant_values=0).astype(np.float32)
+
+        partitions = np.pad(example.partitions[:passage_words_max],
+                            (0, passage_words_max - len(example.partitions[:passage_words_max])),
+                            mode='constant', constant_values=10)
+        partitions_len = np.pad(example.partitions_len,
+                                (0, passage_count - len(example.partitions_len)),
+                                mode='constant', constant_values=0)
+
         writer.write(
             tf.train.Example(features=tf.train.Features(feature=dict(
                 passage_words=tf.train.Feature(int64_list=tf.train.Int64List(value=passage_words.tolist())),
                 question_words=tf.train.Feature(int64_list=tf.train.Int64List(value=question_words.tolist())),
                 passage_chars=tf.train.Feature(int64_list=tf.train.Int64List(value=passage_chars.reshape(-1).tolist())),
-                question_chars=tf.train.Feature(int64_list=tf.train.Int64List(value=question_chars.reshape(-1).tolist())),
+                question_chars=tf.train.Feature(
+                    int64_list=tf.train.Int64List(value=question_chars.reshape(-1).tolist())),
                 passage_length=tf.train.Feature(int64_list=tf.train.Int64List(value=[passage_length])),
                 question_length=tf.train.Feature(int64_list=tf.train.Int64List(value=[question_length])),
                 passage_char_length=tf.train.Feature(int64_list=tf.train.Int64List(value=passage_char_length.tolist())),
-                question_char_length=tf.train.Feature(int64_list=tf.train.Int64List(value=question_char_length.tolist())),
+                question_char_length=tf.train.Feature(
+                    int64_list=tf.train.Int64List(value=question_char_length.tolist())),
                 y1=tf.train.Feature(float_list=tf.train.FloatList(value=answer_start.tolist())),
                 y2=tf.train.Feature(float_list=tf.train.FloatList(value=answer_end.tolist())),
+                passage_ranks=tf.train.Feature(float_list=tf.train.FloatList(value=passage_ranks.tolist())),
+                partitions=tf.train.Feature(int64_list=tf.train.Int64List(value=partitions.tolist())),
+                partitions_len=tf.train.Feature(int64_list=tf.train.Int64List(value=partitions_len.tolist())),
                 answer_tokens=tf.train.Feature(bytes_list=tf.train.BytesList(value=answer_bytes))
             ))).SerializeToString()
         )
@@ -336,7 +321,85 @@ def preprocess(tf_output, passage_words_max, question_words_max, char_max,
     writer.close()
 
 
+@cli.command()
+@click.option('--passage-words-max', default=400, type=int)
+@click.option('--question-words-max', default=30, type=int)
+@click.option('--answer-words-max', default=50, type=int)
+@click.option('--vocab', default='data/vocab.txt', type=str)
+@click.option('--limit', default=None, type=int)
+@click.option('--tf-output')
+@click.argument('data-file')
+def synthesis(passage_words_max, question_words_max, answer_words_max, vocab,
+              limit, tf_output, data_file):
+    examples = load(data_file, passage_words_max=passage_words_max)
+    if limit:
+        examples = itertools.islice(examples, 0, limit)
+
+    writer = tf.python_io.TFRecordWriter(tf_output)
+
+    with open(vocab) as f:
+        vocab_dict = {word.strip(): idx for idx, word in enumerate(f)}
+
+    for example in tqdm(examples):
+        if len(example.answer_tokens) >= answer_words_max - 1:
+            print(1)
+            continue
+
+        if example.answer_end >= passage_words_max:
+            print(2)
+            continue
+
+        if len(example.question_tokens) > question_words_max:
+            print(3)
+            continue
+
+        passage_words = np.zeros((passage_words_max,), dtype=np.int32)
+        question_words = np.zeros((question_words_max,), dtype=np.int32)
+        answer_words = np.zeros((answer_words_max, ), dtype=np.int32)
+        target = np.zeros((answer_words_max, ), dtype=np.int32)
+        answer_start = np.zeros((passage_words_max,), dtype=np.float32)
+        answer_end = np.zeros((passage_words_max,), dtype=np.float32)
+
+        for idx, token in enumerate(example.passage_tokens[:passage_words_max]):
+            passage_words[idx] = vocab_dict.get(token, 0)
+
+        for idx, token in enumerate(example.question_tokens[:question_words_max]):
+            question_words[idx] = vocab_dict.get(token, 0)
+
+        answer_words[0] = vocab_dict.get(SOS)
+
+        for idx, token in enumerate(example.answer_tokens[:answer_words_max - 1]):
+            answer_words[idx + 1] = vocab_dict.get(token, vocab_dict[UNK])
+            target[idx] = vocab_dict.get(token, vocab_dict[UNK])
+
+        target[idx + 1] = vocab_dict.get(EOS)
+
+        answer_start[example.answer_start] = 1.0
+        answer_end[example.answer_end] = 1.0
+
+        passage_length = min(len(example.passage_tokens), passage_words_max)
+        question_length = min(len(example.question_tokens), question_words_max)
+        answer_length = min(len(example.answer_tokens) + 1, answer_words_max)
+
+        writer.write(
+            tf.train.Example(features=tf.train.Features(feature=dict(
+                passage_words=tf.train.Feature(int64_list=tf.train.Int64List(value=passage_words.tolist())),
+                question_words=tf.train.Feature(int64_list=tf.train.Int64List(value=question_words.tolist())),
+                answer_words=tf.train.Feature(int64_list=tf.train.Int64List(value=answer_words.tolist())),
+                passage_length=tf.train.Feature(int64_list=tf.train.Int64List(value=[passage_length])),
+                question_length=tf.train.Feature(int64_list=tf.train.Int64List(value=[question_length])),
+                answer_length=tf.train.Feature(int64_list=tf.train.Int64List(value=[answer_length])),
+                answer_start=tf.train.Feature(float_list=tf.train.FloatList(value=answer_start.tolist())),
+                answer_end=tf.train.Feature(float_list=tf.train.FloatList(value=answer_end.tolist())),
+                target=tf.train.Feature(int64_list=tf.train.Int64List(value=target))
+            ))).SerializeToString()
+        )
+
+    writer.close()
+
+
+
+
+
 if __name__ == '__main__':
     cli()
-
-
