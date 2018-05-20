@@ -3,14 +3,16 @@ import multiprocessing
 import click
 
 from tensorflow.contrib.seq2seq import BahdanauAttention, AttentionWrapper, BasicDecoder,\
-    GreedyEmbeddingHelper, TrainingHelper, dynamic_decode
+    GreedyEmbeddingHelper, TrainingHelper, dynamic_decode, BasicDecoderOutput
 from tensorflow.contrib.training import HParams
 from tensorflow.python.estimator.model_fn import EstimatorSpec
-from tensorflow.python.ops.rnn_cell import GRUCell
+from tensorflow.python.ops.rnn_cell import GRUCell, MultiRNNCell
 from tensorflow.python.layers.core import Dense
 from tensorflow.contrib.layers import maxout
+from tensorflow.python.framework import ops
 
 from snet.helpers import biGRU
+from snet.metrics import rouge_l
 
 
 def masked_concat(a, b, a_length, b_length):
@@ -24,6 +26,41 @@ def masked_concat(a, b, a_length, b_length):
         ], axis=0))
 
     return tf.stack(out)
+
+
+class SNetDecoder(BasicDecoder):
+    def __init__(self, *args, **kwargs):
+        params = kwargs.pop('params')
+
+        super(SNetDecoder, self).__init__(*args, **kwargs)
+
+        self.W_r = Dense(params.units, use_bias=False)
+        self.U_r = Dense(params.units, use_bias=False)
+        self.V_r = Dense(params.units, use_bias=False)
+        self.maxout = lambda inputs: maxout(inputs, params.units // 2)
+
+    def _readout(self, inputs, outputs, attention):
+        r_t = self.W_r(inputs) + self.U_r(attention) + self.V_r(outputs)
+        m_t = self.maxout(r_t)
+        return m_t
+
+    def step(self, time, inputs, state, name=None):
+        with ops.name_scope(name, "BasicDecoderStep", (time, inputs, state)):
+            cell_outputs, cell_state = self._cell(inputs, state)
+
+            cell_outputs = self._readout(inputs, cell_outputs, state.attention)
+
+            if self._output_layer is not None:
+                cell_outputs = self._output_layer(cell_outputs)
+            sample_ids = self._helper.sample(
+                time=time, outputs=cell_outputs, state=cell_state)
+            (finished, next_inputs, next_state) = self._helper.next_inputs(
+                time=time,
+                outputs=cell_outputs,
+                state=cell_state,
+                sample_ids=sample_ids)
+        outputs = BasicDecoderOutput(cell_outputs, sample_ids)
+        return outputs, next_state, next_inputs, finished
 
 
 def input_fn(tf_files,
@@ -84,24 +121,26 @@ def model_fn(features, labels, mode, params):
 
     with tf.variable_scope('passage_encoding'):
         passage_enc, (_, passage_bw_state) = biGRU(tf.concat([passage_emb, answer_start, answer_end], -1),
-                                                   passage_words_length, params, layers=2)
-        passage_bw_state = tf.concat(passage_bw_state, -1)
+                                                   passage_words_length, params, layers=params.layers)
 
     with tf.variable_scope('question_encoding'):
-        question_enc, (_, question_bw_state) = biGRU(question_emb, question_words_length, params, layers=2)
-        question_bw_state = tf.concat(question_bw_state, -1)
+        question_enc, (_, question_bw_state) = biGRU(question_emb, question_words_length, params, layers=params.layers)
 
     output_enc = masked_concat(question_enc, passage_enc, question_words_length, passage_words_length)
 
     decoder_state_layer = Dense(params.units, activation=tf.tanh, use_bias=True, name='decoder_state_init')
-    decoder_init_state = decoder_state_layer(tf.concat([passage_bw_state, question_bw_state], -1))
+    decoder_init_state = tuple(
+        decoder_state_layer(tf.concat([passage_bw_state[i], question_bw_state[i]], -1))
+        for i in range(params.layers)
+    )
 
     attention_mechanism = BahdanauAttention(
         params.units, output_enc,
         memory_sequence_length=passage_words_length + question_words_length)
 
     decoder_cell = AttentionWrapper(
-        GRUCell(params.units), attention_mechanism,
+        MultiRNNCell([GRUCell(params.units) for _ in range(params.layers)]),
+        attention_mechanism,
         attention_layer_size=params.units, initial_cell_state=decoder_init_state)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
@@ -114,22 +153,22 @@ def model_fn(features, labels, mode, params):
 
     projection_layer = Dense(params.vocab_size, use_bias=False)
 
-    decoder = BasicDecoder(
+    decoder = SNetDecoder(
         decoder_cell, helper, decoder_cell.zero_state(params.batch_size, tf.float32),
-        output_layer=projection_layer)
+        output_layer=projection_layer, params=params)
 
     outputs, _, outputs_length = dynamic_decode(decoder, maximum_iterations=params.answer_max_words)
     logits = outputs.rnn_output
 
     logits = tf.Print(logits, [outputs.sample_id, labels], summarize=1000)
 
+    labels = tf.stop_gradient(labels[:, :tf.reduce_max(outputs_length)])
+
+    crossent = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=logits)
+    target_weights = tf.sequence_mask(outputs_length, tf.reduce_max(outputs_length), dtype=logits.dtype)
+    loss = tf.reduce_sum(crossent * target_weights) / params.batch_size
+
     if mode == tf.estimator.ModeKeys.TRAIN:
-        labels = tf.stop_gradient(labels[:, :tf.reduce_max(outputs_length)])
-
-        crossent = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=logits)
-        target_weights = tf.sequence_mask(outputs_length, tf.reduce_max(outputs_length), dtype=logits.dtype)
-        loss = tf.reduce_sum(crossent * target_weights) / params.batch_size
-
         optimizer = tf.train.AdadeltaOptimizer(learning_rate=1)
         global_step = tf.train.get_or_create_global_step()
 
@@ -142,6 +181,12 @@ def model_fn(features, labels, mode, params):
             mode, loss=loss, train_op=train_op,
         )
 
+    if mode == tf.estimator.ModeKeys.EVAL:
+        return EstimatorSpec(
+            mode, loss=loss, eval_metric_ops={'rouge-l': rouge_l(outputs.sample_id, labels,
+                                                                 features['answer_length'],  params)}
+        )
+
 
 @click.command()
 @click.option('--model-dir')
@@ -151,12 +196,12 @@ def model_fn(features, labels, mode, params):
 def main(model_dir, train_data, eval_data, hparams):
     tf.logging.set_verbosity(tf.logging.INFO)
 
-    hparams_override = hparams
-    hparams = HParams(
+    hparams_ = HParams(
         num_epochs=10,
         batch_size=16,
         max_steps=10000,
         units=150,
+        layers=2,
         dropout=0.0,
         question_max_words=30,
         passage_max_words=400,
@@ -169,7 +214,8 @@ def main(model_dir, train_data, eval_data, hparams):
         tgt_sos_id=1,
         tgt_eos_id=2
     )
-    hparams.parse(hparams_override)
+    hparams_.parse(hparams)
+    hparams = hparams_
 
     config = tf.ConfigProto()
     # config.intra_op_parallelism_threads = 32
@@ -219,7 +265,7 @@ def main(model_dir, train_data, eval_data, hparams):
         #     serving_input_receiver_fn=serving_input_fn,
         #     exports_to_keep=1,
         #     as_text=True)],
-        steps=1,
+        steps=10,
         throttle_secs=3600
     )
 
