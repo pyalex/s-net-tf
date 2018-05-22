@@ -91,7 +91,7 @@ def find_answer(passage, answer):
     return answer_start, answer_end + 1
 
 
-def load(input_filename, passage_words_max=800) -> typing.Iterator[example]:
+def load(input_filename, passage_words_max=800, only_selected=False) -> typing.Iterator[example]:
     f = open(input_filename, 'r')
     items = ujson.loads(f.readline())
 
@@ -116,6 +116,9 @@ def load(input_filename, passage_words_max=800) -> typing.Iterator[example]:
         partitions_len = []
         passage_tokens = []
 
+        if only_selected:
+            passages = [p for p in passages if p['is_selected']]
+
         for idx, p in enumerate(passages):
             text = clean(p['passage_text'])
             tokens = word_tokenize(text)
@@ -126,7 +129,7 @@ def load(input_filename, passage_words_max=800) -> typing.Iterator[example]:
             partitions.extend([idx] * len(tokens))
             partitions_len.append(len(tokens))
 
-        if not all(partitions_len) or len(partitions_len) != 10:
+        if not only_selected and not all(partitions_len) or len(partitions_len) != 10:
             continue
 
         passage_ranks = [p['is_selected'] for p in passages]
@@ -331,7 +334,7 @@ def extraction(tf_output, passage_words_max, question_words_max, passage_count,
 @click.argument('data-file')
 def synthesis(passage_words_max, question_words_max, answer_words_max, vocab,
               limit, tf_output, data_file):
-    examples = load(data_file, passage_words_max=passage_words_max)
+    examples = load(data_file, passage_words_max=passage_words_max, only_selected=True)
     if limit:
         examples = itertools.islice(examples, 0, limit)
 
@@ -396,9 +399,6 @@ def synthesis(passage_words_max, question_words_max, answer_words_max, vocab,
         )
 
     writer.close()
-
-
-
 
 
 if __name__ == '__main__':

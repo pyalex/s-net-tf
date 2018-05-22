@@ -192,7 +192,7 @@ def model_fn(features, labels, mode, params):
 @click.option('--model-dir')
 @click.option('--train-data', default='data/train_synthesis.tf')
 @click.option('--eval-data', default='data/train_synthesis.tf')
-@click.option('--hparams', default='', type=str)
+@click.option('--hparams', default='', type=str, help='Comma separated list of "name=value" pairs.')
 def main(model_dir, train_data, eval_data, hparams):
     tf.logging.set_verbosity(tf.logging.INFO)
 
