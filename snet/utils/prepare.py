@@ -129,7 +129,7 @@ def load(input_filename, passage_words_max=800, only_selected=False) -> typing.I
             partitions.extend([idx] * len(tokens))
             partitions_len.append(len(tokens))
 
-        if not only_selected and not all(partitions_len) or len(partitions_len) != 10:
+        if not only_selected and (not all(partitions_len) or len(partitions_len) != 10):
             continue
 
         passage_ranks = [p['is_selected'] for p in passages]
