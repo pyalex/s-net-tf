@@ -34,10 +34,10 @@ class SNetDecoder(BasicDecoder):
 
         super(SNetDecoder, self).__init__(*args, **kwargs)
 
-        self.W_r = Dense(params.units, use_bias=False)
-        self.U_r = Dense(params.units, use_bias=False)
-        self.V_r = Dense(params.units, use_bias=False)
-        self.maxout = lambda inputs: maxout(inputs, params.units // 2)
+        self.W_r = Dense(2 * params.units, use_bias=False)
+        self.U_r = Dense(2 * params.units, use_bias=False)
+        self.V_r = Dense(2 * params.units, use_bias=False)
+        self.maxout = lambda inputs: maxout(inputs, params.units)
 
     def _readout(self, inputs, outputs, attention):
         r_t = self.W_r(inputs) + self.U_r(attention) + self.V_r(outputs)
@@ -126,7 +126,7 @@ def model_fn(features, labels, mode, params):
     with tf.variable_scope('question_encoding'):
         question_enc, (_, question_bw_state) = biGRU(question_emb, question_words_length, params, layers=params.layers)
 
-    output_enc = masked_concat(question_enc, passage_enc, question_words_length, passage_words_length)
+    # output_enc = masked_concat(question_enc, passage_enc, question_words_length, passage_words_length)
 
     decoder_state_layer = Dense(params.units, activation=tf.tanh, use_bias=True, name='decoder_state_init')
     decoder_init_state = tuple(
@@ -134,14 +134,13 @@ def model_fn(features, labels, mode, params):
         for i in range(params.layers)
     )
 
-    attention_mechanism = BahdanauAttention(
-        params.units, output_enc,
-        memory_sequence_length=passage_words_length + question_words_length)
+    question_att = BahdanauAttention(params.units, question_enc, memory_sequence_length=question_words_length)
+    passage_att = BahdanauAttention(params.units, passage_enc, memory_sequence_length=passage_words_length)
 
     decoder_cell = AttentionWrapper(
         MultiRNNCell([GRUCell(params.units) for _ in range(params.layers)]),
-        attention_mechanism,
-        attention_layer_size=params.units, initial_cell_state=decoder_init_state)
+        [question_att, passage_att],
+        initial_cell_state=decoder_init_state)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
         answer_emb = tf.nn.embedding_lookup(embedding_encoder, features['answer_words'])
