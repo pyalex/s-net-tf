@@ -98,12 +98,6 @@ def load(input_filename, passage_words_max=800, only_selected=False) -> typing.I
     def shortest(lst: typing.List[str]) -> str:
         return sorted(lst, key=len)[0]
 
-    def iter_find(find, items):
-        pos = 0
-        for i in items:
-            pos = find(i, pos)
-            yield pos, pos + len(i)
-
     def clean(text):
         return text.replace("''", '" ').replace("``", '" ').lower().strip(' .').lstrip('()_')
 
@@ -134,8 +128,6 @@ def load(input_filename, passage_words_max=800, only_selected=False) -> typing.I
 
         passage_ranks = [p['is_selected'] for p in passages]
         passage_chars = [list(token) for token in passage_tokens]
-
-        # spans = list(iter_find(full_passage.find, passage_tokens))
 
         question = clean(items['query'][key])
         question_tokens = word_tokenize(question)
@@ -227,7 +219,7 @@ def load_embeddings(filename):
 @click.option('--question-words-max', default=30, type=int)
 @click.option('--passage-count', default=10, type=int)
 @click.option('--char-max', default=16, type=int)
-@click.option('--word-embedding', default='data/glove.42B.300d.txt')
+@click.option('--word-embedding', default='data/glove.6B.300d.txt')
 @click.option('--char-embedding', default='data/glove.840B.300d-char.txt')
 @click.option('--limit', default=None, type=int)
 @click.option('--tf-output')

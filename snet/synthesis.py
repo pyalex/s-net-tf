@@ -264,7 +264,7 @@ def main(model_dir, train_data, eval_data, hparams):
         #     serving_input_receiver_fn=serving_input_fn,
         #     exports_to_keep=1,
         #     as_text=True)],
-        steps=10,
+        steps=100,
         throttle_secs=3600
     )
 
