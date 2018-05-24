@@ -271,7 +271,8 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
 @click.option('--word-embeddings', default='data/glove.6B.300d.txt')
 @click.option('--char-embeddings', default='data/glove.840B.300d-char.txt')
 @click.option('--hparams', default='', type=str, help='Comma separated list of "name=value" pairs.')
-def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings, hparams):
+@click.option('--log-devices', type=bool)
+def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings, hparams, log_devices):
     tf.logging.set_verbosity(tf.logging.INFO)
 
     char_embeddings_np = load_embeddings(char_embeddings)
@@ -308,6 +309,7 @@ def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings, hpa
 
     config = tf.ConfigProto()
     config.allow_soft_placement = True
+    config.log_device_placement = log_devices
     # config.intra_op_parallelism_threads = 32
     # config.inter_op_parallelism_threads = 32
 
