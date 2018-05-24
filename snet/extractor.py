@@ -166,12 +166,12 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
             question_enc = encoder(question_words_emb, question_words_length, question_chars_emb,
                                    features['question_char_length'], params)
 
+    with tf.device(next(devices)):
         with tf.variable_scope('passage_encoding'):
             passage_enc = encoder(passage_words_emb, passage_words_length, passage_chars_emb,
                                   features['passage_char_length'], params)
-    # question_enc = tf.Print(question_enc, [question_enc], summarize=1000)
+        # question_enc = tf.Print(question_enc, [question_enc], summarize=1000)
 
-    with tf.device(next(devices)):
         with tf.variable_scope('attention'):
             cell = GatedAttentionWrapper(
                 attention_fun(params.units, question_enc, question_words_length),
@@ -271,7 +271,7 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
 @click.option('--word-embeddings', default='data/glove.6B.300d.txt')
 @click.option('--char-embeddings', default='data/glove.840B.300d-char.txt')
 @click.option('--hparams', default='', type=str, help='Comma separated list of "name=value" pairs.')
-@click.option('--log-devices', type=bool)
+@click.option('--log-devices', type=bool, default=False)
 def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings, hparams, log_devices):
     tf.logging.set_verbosity(tf.logging.INFO)
 
