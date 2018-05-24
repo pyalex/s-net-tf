@@ -237,7 +237,8 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
     loss1 = tf.Print(loss1, [tf.argmax(answer_start, -1), tf.argmax(answer_end, -1),
                              tf.reduce_mean(loss1), tf.reduce_mean(loss2), tf.reduce_mean(loss3)], message="loss")
 
-    loss = params.r * tf.reduce_mean(loss1 + loss2) + (1 - params.r) * tf.reduce_mean(loss3)
+    loss = params.r * tf.reduce_mean(loss1 + loss2) + (1 - params.r) * tf.reduce_mean(loss3) \
+        if params.r < 1 else tf.reduce_mean(loss1 + loss2)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
         optimizer = tf.train.AdadeltaOptimizer(learning_rate=1)
