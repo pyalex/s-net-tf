@@ -10,6 +10,7 @@ from tensorflow.python.ops.rnn_cell import GRUCell, MultiRNNCell
 from tensorflow.python.layers.core import Dense
 from tensorflow.contrib.layers import maxout
 from tensorflow.python.framework import ops
+from tensorflow.contrib.lookup import lookup_ops
 
 from snet.helpers import biGRU
 from snet.metrics import rouge_l
@@ -93,8 +94,8 @@ def input_fn(tf_files,
     ds = tf.data.TFRecordDataset(tf_files)
     ds = ds.map(parse, num_parallel_calls=multiprocessing.cpu_count())
 
-    if mode == tf.estimator.ModeKeys.TRAIN:
-        ds = ds.shuffle(buffer_size)
+    #if mode == tf.estimator.ModeKeys.TRAIN:
+    ds = ds.shuffle(buffer_size)
 
     ds = ds.apply(tf.contrib.data.batch_and_drop_remainder(batch_size))
     ds = ds.repeat(num_epochs)
@@ -164,7 +165,7 @@ def model_fn(features, labels, mode, params):
     labels = tf.stop_gradient(labels[:, :tf.reduce_max(outputs_length)])
 
     crossent = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=logits)
-    target_weights = tf.sequence_mask(outputs_length, tf.reduce_max(outputs_length), dtype=logits.dtype)
+    target_weights = tf.sequence_mask(outputs_length, dtype=logits.dtype)
     loss = tf.reduce_sum(crossent * target_weights) / params.batch_size
 
     if mode == tf.estimator.ModeKeys.TRAIN:
@@ -181,9 +182,13 @@ def model_fn(features, labels, mode, params):
         )
 
     if mode == tf.estimator.ModeKeys.EVAL:
+        table = lookup_ops.index_to_string_table_from_file(params.word_vocab_file)
+
         return EstimatorSpec(
             mode, loss=loss, eval_metric_ops={'rouge-l': rouge_l(outputs.sample_id, labels,
-                                                                 features['answer_length'],  params)}
+                                                                 outputs_length, features['answer_length'],
+                                                                 params, table),
+                                              }
         )
 
 
@@ -191,8 +196,9 @@ def model_fn(features, labels, mode, params):
 @click.option('--model-dir')
 @click.option('--train-data', default='data/train_synthesis.tf')
 @click.option('--eval-data', default='data/train_synthesis.tf')
+@click.option('--vocab-file', default='data/vocab.txt')
 @click.option('--hparams', default='', type=str, help='Comma separated list of "name=value" pairs.')
-def main(model_dir, train_data, eval_data, hparams):
+def main(model_dir, train_data, eval_data, vocab_file, hparams):
     tf.logging.set_verbosity(tf.logging.INFO)
 
     hparams_ = HParams(
@@ -203,7 +209,7 @@ def main(model_dir, train_data, eval_data, hparams):
         layers=2,
         dropout=0.0,
         question_max_words=30,
-        passage_max_words=400,
+        passage_max_words=150,
         answer_max_words=50,
         vocab_size=30000,
         emb_size=300,
@@ -211,7 +217,8 @@ def main(model_dir, train_data, eval_data, hparams):
         cudnn=False,
         grad_clip=5.0,
         tgt_sos_id=1,
-        tgt_eos_id=2
+        tgt_eos_id=2,
+        word_vocab_file=vocab_file
     )
     hparams_.parse(hparams)
     hparams = hparams_
@@ -264,7 +271,7 @@ def main(model_dir, train_data, eval_data, hparams):
         #     serving_input_receiver_fn=serving_input_fn,
         #     exports_to_keep=1,
         #     as_text=True)],
-        steps=100,
+        steps=10,
         throttle_secs=3600
     )
 

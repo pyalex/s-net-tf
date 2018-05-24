@@ -61,18 +61,23 @@ def lcs(x, y):
     return table[n, m]
 
 
-def rouge_l(prediction, target, length, params):
+def rouge_l(prediction, target, prediction_length, answer_length, params, table):
     prediction_list = tf.unstack(prediction, params.batch_size)
     target_list = tf.unstack(target, params.batch_size)
-    length_list = tf.unstack(length, params.batch_size)
+    answer_length_list = tf.unstack(answer_length, params.batch_size)
+    prediction_length_list = tf.unstack(prediction_length, params.batch_size)
 
     rouge = []
-    for p, t, l in zip(prediction_list, target_list, length_list):
-        intersection = tf.py_func(lcs, [p[:l], t[:l]], tf.int64, stateful=False)
+    for p, t, pl, tl in zip(prediction_list, target_list, prediction_length_list, answer_length_list):
+        intersection = tf.py_func(lcs, [p[:pl], t[:tl]], tf.int64, stateful=False)
         intersection = tf.cast(intersection, tf.int32)
 
-        precision = intersection / tf.size(p)
-        recall = intersection / tf.size(t)
+        intersection = tf.Print(intersection, [table.lookup(tf.cast(p[:pl], tf.int64)),
+                                               table.lookup(tf.cast(t[:tl], tf.int64)),
+                                               intersection], summarize=100)
+
+        precision = intersection / pl
+        recall = intersection / tl
 
         rouge.append(tf.cond(precision + recall > 0,
                              lambda: 2 * precision * recall / (precision + recall),

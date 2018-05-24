@@ -307,6 +307,7 @@ def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings, hpa
     hparams = hparams_.parse(hparams)
 
     config = tf.ConfigProto()
+    config.allow_soft_placement = True
     # config.intra_op_parallelism_threads = 32
     # config.inter_op_parallelism_threads = 32
 
