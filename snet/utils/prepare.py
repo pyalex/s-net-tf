@@ -231,17 +231,17 @@ def extraction(tf_output, passage_words_max, question_words_max, passage_count,
         examples = itertools.islice(examples, 0, limit)
 
     writer = tf.python_io.TFRecordWriter(tf_output)
-    word2idx, unknown = load_embeddings(word_embedding)
-    char2idx, unknown = load_embeddings(char_embedding)
+    word2idx, unknown_word = load_embeddings(word_embedding)
+    char2idx, unknown_char = load_embeddings(char_embedding)
 
     def convert_words(tokens, output):
         for i, token in enumerate(tokens):
-            output[i] = word2idx.get(token, unknown)
+            output[i] = word2idx.get(token, unknown_word)
 
     def convert_chars(tokens, output):
         for i, token in enumerate(tokens):
             for j, char in enumerate(token[:char_max]):
-                output[i, j] = char2idx.get(char, unknown)
+                output[i, j] = char2idx.get(char, unknown_char)
 
     for example in tqdm(examples):
         if example.answer_end >= passage_words_max:
