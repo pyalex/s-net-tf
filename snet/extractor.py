@@ -12,7 +12,7 @@ from tensorflow.contrib.training import HParams
 from tensorflow.python.client import device_lib
 from tensorflow.python.estimator.model_fn import EstimatorSpec
 from tensorflow.python.layers.core import Dense
-from tensorflow.python.ops.rnn_cell_impl import GRUCell
+from tensorflow.python.ops.rnn_cell_impl import GRUCell, DropoutWrapper
 
 from snet.helpers import biGRU, pad_to_shape_2d, ReusableBahdanauAttention, GatedAttentionWrapper
 from snet.metrics import f1_metric
@@ -124,6 +124,8 @@ def encoder(word_emb, word_length, char_emb, char_length, params):
 
 
 def pointer_net(passage, passage_length, question_pool, params):
+    question_pool = tf.nn.dropout(question_pool, 1 - params.dropout)
+
     attention_cell = BahdanauAttention(params.units, passage, passage_length,
                                        name="pointer_attention", probability_fn=tf.identity, score_mask_value=0)
     p1, _ = attention_cell(question_pool, None)
@@ -131,6 +133,8 @@ def pointer_net(passage, passage_length, question_pool, params):
     context = tf.reduce_sum(tf.expand_dims(tf.nn.softmax(p1), -1) * passage, 1)
     rnn = GRUCell(params.units * 2, name="pointer_gru")
     _, state = rnn(context, question_pool)
+
+    state = tf.nn.dropout(state, 1 - params.dropout)
 
     p2, _ = attention_cell(state, None)
     return p1, p2
@@ -161,6 +165,9 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
     passage_words_emb = tf.nn.embedding_lookup(word_embeddings, features['passage_words'])
     passage_chars_emb = tf.nn.embedding_lookup(char_embeddings, features['passage_chars'])
 
+    question_words_emb = tf.nn.dropout(question_words_emb, 1.0 - params.dropout)
+    passage_words_emb = tf.nn.dropout(passage_words_emb, 1.0 - params.dropout)
+
     with tf.device(next(devices)):
         with tf.variable_scope('question_encoding'):
             question_enc = encoder(question_words_emb, question_words_length, question_chars_emb,
@@ -175,7 +182,8 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
         with tf.variable_scope('attention'):
             cell = GatedAttentionWrapper(
                 attention_fun(params.units, question_enc, question_words_length),
-                GRUCell(params.units, name="attention_gru"))
+                DropoutWrapper(GRUCell(params.units, name="attention_gru"),
+                               output_keep_prob=1 - params.dropout))
 
             passage_repr, _ = tf.nn.dynamic_rnn(cell, passage_enc, passage_words_length, dtype=tf.float32)
 
@@ -237,7 +245,7 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
     # loss1 = tf.Print(loss1, [tf.argmax(answer_start, -1), tf.argmax(answer_end, -1),
     #                          tf.reduce_mean(loss1), tf.reduce_mean(loss2), tf.reduce_mean(loss3)], message="loss")
 
-    loss = params.r * tf.reduce_mean(loss1 + loss2) + (1 - params.r) * tf.reduce_mean(loss3) \
+    loss = (params.r * tf.reduce_mean(loss1 + loss2) + (1 - params.r) * tf.reduce_mean(loss3)) \
         if params.r < 1 else tf.reduce_mean(loss1 + loss2)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
@@ -259,7 +267,8 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
         table = lookup_ops.index_to_string_table_from_file(params.word_vocab_file,
                                                            value_column_index=0, delimiter=" ")
         return EstimatorSpec(
-            mode, loss=loss, eval_metric_ops={'f1': f1_metric(p1, p2,
+            mode, loss=loss, eval_metric_ops={'f1': f1_metric(p1, p2, tf.argmax(answer_start, -1),
+                                                              tf.argmax(answer_end, -1),
                                                               features['answer_tokens'],
                                                               features['passage_words'], params, table)}
         )
@@ -290,7 +299,7 @@ def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings, hpa
         max_steps=1000,
         units=150,
         layers=2,
-        dropout=0.0,
+        dropout=0.2,
         question_max_words=30,
         question_max_chars=16,
         passage_max_words=800,
@@ -322,15 +331,15 @@ def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings, hpa
         session_config=config
     )
 
-    with tf.Session() as sess:
-        test = input_fn(
-            [train_data],
-            hparams=hparams,
-            mode=tf.estimator.ModeKeys.EVAL,
-            batch_size=hparams.batch_size
-        )
-
-        print(sess.run([test]))
+    # with tf.Session() as sess:
+    #     test = input_fn(
+    #         [train_data],
+    #         hparams=hparams,
+    #         mode=tf.estimator.ModeKeys.EVAL,
+    #         batch_size=hparams.batch_size
+    #     )
+    #
+    #     print(sess.run([test]))
 
     estimator = tf.estimator.Estimator(
         model_fn=partial(model_fn, word_embeddings_np=word_embeddings_np, char_embeddings_np=char_embeddings_np),

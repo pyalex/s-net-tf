@@ -2,15 +2,15 @@ import tensorflow as tf
 
 from tensorflow.contrib.seq2seq import BahdanauAttention
 from tensorflow.python.layers.core import Dense
-from tensorflow.python.ops.rnn_cell_impl import MultiRNNCell, GRUCell, RNNCell
+from tensorflow.python.ops.rnn_cell_impl import MultiRNNCell, GRUCell, RNNCell, DropoutWrapper
 
 
-def biGRU(input, input_length, params, layers=3):
-    cell_fw = MultiRNNCell([GRUCell(params.units) for _ in range(layers)])
-    cell_bw = MultiRNNCell([GRUCell(params.units) for _ in range(layers)])
-    # cell_fw = DropoutWrapper(GRUCell(params.units), output_keep_prob=1 - params.dropout)
-    # cell_bw = DropoutWrapper(GRUCell(params.units), output_keep_prob=1 - params.dropout)
-    # input = tf.Print(input, [tf.shape(input), input_length], summarize=1000)
+def biGRU(input, input_length, params, layers=None):
+    cell_fw = MultiRNNCell([DropoutWrapper(GRUCell(params.units), output_keep_prob=1.0 - params.dropout)
+                            for _ in range(layers or params.layers)])
+    cell_bw = MultiRNNCell([DropoutWrapper(GRUCell(params.units), output_keep_prob=1.0 - params.dropout)
+                            for _ in range(layers or params.layers)])
+
     output, states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, input,
                                                      sequence_length=input_length,
                                                      dtype=tf.float32)
@@ -97,4 +97,5 @@ class GatedAttentionWrapper(AttentionWrapper):
     def _compute_attention(self, input, state):
         attention = super(GatedAttentionWrapper, self)._compute_attention(input, state)
         gate = self._gate(attention)
+        gate = tf.nn.dropout(gate, 0.8)
         return gate * attention

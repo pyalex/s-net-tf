@@ -1,26 +1,29 @@
 import tensorflow as tf
 
 
-def f1_metric(p1, p2, answers, passage, hparams, table):
+def f1_metric(p1, p2, tp1, tp2, answers, passage, hparams, table):
     p1 = tf.unstack(p1, hparams.batch_size)
     p2 = tf.unstack(p2, hparams.batch_size)
+    tp1 = tf.unstack(tp1, hparams.batch_size)
+    tp2 = tf.unstack(tp2, hparams.batch_size)
     answers = tf.sparse_tensor_to_dense(answers, '')
     answers = tf.unstack(answers, hparams.batch_size)
     passage = tf.unstack(passage, hparams.batch_size)
 
     f1 = []
-    for p1_, p2_, answer, context in zip(p1, p2, answers, passage):
+    for p1_, p2_, tp1_, tp2_, answer, context in zip(p1, p2, tp1, tp2, answers, passage):
         answer = tf.boolean_mask(answer, tf.not_equal(answer, ''))
+
         prediction = table.lookup(context[p1_:p2_])
+        tr_answer = table.lookup(context[tp1_:tp2_])
 
-        # intersection = tf.size(tf.sets.set_intersection(tf.expand_dims(prediction, 0),
-        #                                                 tf.expand_dims(answer, 0)))
+        prediction = tf.Print(prediction, [prediction, tr_answer, answer], summarize=100)
 
-        intersection = tf.py_func(lcs, [prediction, answer], tf.int64, stateful=False)
+        intersection = tf.py_func(lcs, [prediction, tr_answer], tf.int64, stateful=False)
         intersection = tf.cast(intersection, tf.int32)
 
         precision = intersection / tf.size(prediction)
-        recall = intersection / tf.size(answer)
+        recall = intersection / tf.size(tr_answer)
 
         f1.append(tf.cond(precision + recall > 0,
                           lambda: 2 * precision * recall / (precision + recall),
