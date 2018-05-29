@@ -169,14 +169,14 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
     passage_words_emb = tf.nn.dropout(passage_words_emb, 1.0 - params.dropout)
 
     with tf.device(next(devices)):
-        with tf.variable_scope('question_encoding'):
-            question_enc = encoder(question_words_emb, question_words_length, question_chars_emb,
-                                   features['question_char_length'], params)
-
-    with tf.device(next(devices)):
         with tf.variable_scope('passage_encoding'):
             passage_enc = encoder(passage_words_emb, passage_words_length, passage_chars_emb,
                                   features['passage_char_length'], params)
+
+    with tf.device(next(devices)):
+        with tf.variable_scope('question_encoding'):
+            question_enc = encoder(question_words_emb, question_words_length, question_chars_emb,
+                                   features['question_char_length'], params)
         # question_enc = tf.Print(question_enc, [question_enc], summarize=1000)
 
         with tf.variable_scope('attention'):
