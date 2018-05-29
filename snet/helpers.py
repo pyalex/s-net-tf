@@ -6,9 +6,11 @@ from tensorflow.python.ops.rnn_cell_impl import MultiRNNCell, GRUCell, RNNCell, 
 
 
 def biGRU(input, input_length, params, layers=None):
-    cell_fw = MultiRNNCell([DropoutWrapper(GRUCell(params.units), output_keep_prob=1.0 - params.dropout)
+    cell_fw = MultiRNNCell([DropoutWrapper(GRUCell(params.units),
+                                           output_keep_prob=1.0 - params.dropout, state_keep_prob=1.0 - params.dropout)
                             for _ in range(layers or params.layers)])
-    cell_bw = MultiRNNCell([DropoutWrapper(GRUCell(params.units), output_keep_prob=1.0 - params.dropout)
+    cell_bw = MultiRNNCell([DropoutWrapper(GRUCell(params.units),
+                                           output_keep_prob=1.0 - params.dropout, state_keep_prob=1.0 - params.dropout)
                             for _ in range(layers or params.layers)])
 
     output, states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, input,
@@ -54,9 +56,10 @@ class ReusableBahdanauAttention(BahdanauAttention):
 
 
 class AttentionWrapper(RNNCell):
-    def __init__(self, attention_mechanism, cell: RNNCell):
+    def __init__(self, attention_mechanism, cell: RNNCell, dropout=0.0):
         self._attention_mechanism = attention_mechanism
         self._cell = cell
+        self._dropout = dropout
 
         super(RNNCell, self).__init__()
 
@@ -76,6 +79,7 @@ class AttentionWrapper(RNNCell):
         expanded_alignments = tf.expand_dims(alignments, -1)
 
         context = tf.reduce_sum(expanded_alignments * self._attention_mechanism.values, 1)
+        context = tf.nn.dropout(context, 1.0 - self._dropout)
         return tf.concat([input, context], axis=1)
 
     def call(self, inputs, state):  # pylint: disable=signature-differs
@@ -87,7 +91,7 @@ class AttentionWrapper(RNNCell):
 class GatedAttentionWrapper(AttentionWrapper):
     def __init__(self, attention_mechanism, *args, **kwargs):
         super(GatedAttentionWrapper, self).__init__(attention_mechanism, *args, **kwargs)
-
+        self._dropout = kwargs.get('dropout', 0.0)
         self._gate = Dense(activation=tf.sigmoid,
                            units=4 * attention_mechanism._num_units,
                            use_bias=False,
@@ -97,5 +101,5 @@ class GatedAttentionWrapper(AttentionWrapper):
     def _compute_attention(self, input, state):
         attention = super(GatedAttentionWrapper, self)._compute_attention(input, state)
         gate = self._gate(attention)
-        gate = tf.nn.dropout(gate, 0.8)
+        gate = tf.nn.dropout(gate, 1.0 - self._dropout)
         return gate * attention

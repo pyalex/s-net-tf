@@ -183,19 +183,39 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
             cell = GatedAttentionWrapper(
                 attention_fun(params.units, question_enc, question_words_length),
                 DropoutWrapper(GRUCell(params.units, name="attention_gru"),
-                               output_keep_prob=1 - params.dropout))
+                               output_keep_prob=1 - params.dropout, state_keep_prob=1 - params.dropout),
+                dropout=params.dropout
+            )
 
             passage_repr, _ = tf.nn.dynamic_rnn(cell, passage_enc, passage_words_length, dtype=tf.float32)
 
         with tf.variable_scope('pointer'):
             pool_param = tf.get_variable('pool_param', shape=(params.units,), initializer=tf.initializers.ones)
-            pool_param = tf.reshape(tf.tile(pool_param, [params.batch_size]), (-1, params.units))
+            pool_param = tf.reshape(tf.tile(pool_param, [tf.shape(question_enc)[0]]), (-1, params.units))
 
             question_alignments, _ = attention_fun(params.units, question_enc,
                                                    question_words_length, name="question_align")(pool_param, None)
             question_pool = tf.reduce_sum(tf.expand_dims(question_alignments, -1) * question_enc, 1)
 
             logits1, logits2 = pointer_net(passage_repr, passage_words_length, question_pool, params)
+
+        outer = tf.matmul(tf.expand_dims(tf.nn.softmax(logits1), axis=2),
+                          tf.expand_dims(tf.nn.softmax(logits2), axis=1))
+        outer = tf.matrix_band_part(outer, 0, 15)
+        p1 = tf.argmax(tf.reduce_max(outer, axis=2), axis=1)
+        p2 = tf.argmax(tf.reduce_max(outer, axis=1), axis=1)
+
+        if mode == tf.estimator.ModeKeys.PREDICT:
+            predictions = {
+                'start': p1, 'end': p2
+            }
+            export_outputs = {
+                'prediction': tf.estimator.export.PredictOutput(predictions)
+            }
+
+            return tf.estimator.EstimatorSpec(mode,
+                                              predictions=predictions,
+                                              export_outputs=export_outputs)
 
         with tf.variable_scope('passage_ranking'):
             W_g = Dense(params.units, activation=tf.tanh, use_bias=False)
@@ -226,12 +246,6 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
                 g.append(g_i)
 
             g = tf.concat(g, -1)
-
-    outer = tf.matmul(tf.expand_dims(tf.nn.softmax(logits1), axis=2),
-                      tf.expand_dims(tf.nn.softmax(logits2), axis=1))
-    outer = tf.matrix_band_part(outer, 0, 15)
-    p1 = tf.argmax(tf.reduce_max(outer, axis=2), axis=1)
-    p2 = tf.argmax(tf.reduce_max(outer, axis=1), axis=1)
 
     answer_start, answer_end, passage_rank = labels
 
@@ -274,6 +288,35 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
         )
 
 
+def serving_input_fn(params):
+    receiver_tensor = {
+        'question': tf.placeholder(tf.string, [None, params.question_max_words]),
+        'question_chars': tf.placeholder(tf.string, [None, params.question_max_words, params.question_max_chars]),
+        'context': tf.placeholder(tf.string, [None, params.passage_max_words]),
+        'context_chars': tf.placeholder(tf.string, [None, params.passage_max_words, params.passage_max_chars])
+    }
+
+    word2idx = lookup_ops.index_table_from_file(params.word_vocab_file, key_column_index=0,
+                                                delimiter=" ", default_value=params.vocab_size - 1)
+    char2idx = lookup_ops.index_table_from_file(params.char_vocab_file, key_column_index=0,
+                                                delimiter=" ", default_value=params.char_vocab_size - 1)
+
+    features = {
+        'passage_words': word2idx.lookup(receiver_tensor['context']),
+        'passage_chars': char2idx.lookup(receiver_tensor['context_chars']),
+        'question_words': word2idx.lookup(receiver_tensor['question']),
+        'question_chars': char2idx.lookup(receiver_tensor['question_chars']),
+        'passage_length': tf.reduce_sum(tf.cast(tf.not_equal(receiver_tensor["context"], ""), tf.int32), -1),
+        'passage_char_length': tf.reduce_sum(tf.cast(tf.not_equal(receiver_tensor["context_chars"], ""), tf.int32), -1),
+        'question_length': tf.reduce_sum(tf.cast(tf.not_equal(receiver_tensor["question"], ""), tf.int32), -1),
+        'question_char_length': tf.reduce_sum(tf.cast(tf.not_equal(receiver_tensor["question_chars"], ""), tf.int32), -1),
+    }
+
+    return tf.estimator.export.ServingInputReceiver(
+        features=features, receiver_tensors=receiver_tensor
+    )
+
+
 @click.command()
 @click.option('--model-dir')
 @click.option('--train-data', default='data/train.tf')
@@ -309,6 +352,7 @@ def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings, hpa
         char_vocab_size=char_embeddings_np.shape[0],
         char_emb_size=300,
         word_vocab_file=word_embeddings,
+        char_vocab_file=char_embeddings,
         passage_count=10,
         passage_max_len=120,
         r=0.8,
@@ -364,12 +408,12 @@ def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings, hpa
             mode=tf.estimator.ModeKeys.EVAL,
             batch_size=hparams.batch_size
         ),
-        # exporters=[tf.estimator.LatestExporter(
-        #     name="predict",  # the name of the folder in which the model will be exported to under export
-        #     serving_input_receiver_fn=serving_input_fn,
-        #     exports_to_keep=1,
-        #     as_text=True)],
-        steps=100,
+        exporters=[tf.estimator.LatestExporter(
+            name="predict",  # the name of the folder in which the model will be exported to under export
+            serving_input_receiver_fn=partial(serving_input_fn, params=hparams),
+            exports_to_keep=1,
+            as_text=True)],
+        steps=1,
         throttle_secs=3600
     )
 

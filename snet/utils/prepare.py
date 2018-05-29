@@ -9,8 +9,6 @@ import itertools
 
 import tensorflow as tf
 
-from snet.utils import helpers
-
 nlp = spacy.blank("en")
 
 example = namedtuple('example', ['passage_tokens', 'passage_chars',
