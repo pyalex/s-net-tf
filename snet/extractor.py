@@ -124,10 +124,13 @@ def encoder(word_emb, word_length, char_emb, char_length, params):
 
 
 def pointer_net(passage, passage_length, question_pool, params):
+    attention_fun = partial(BahdanauAttention, num_units=params.units, normalize=True) if params.attention == 'bahdanau' \
+        else partial(LuongAttention, num_units=2 * params.units)
+
     question_pool = tf.nn.dropout(question_pool, 1 - params.dropout)
 
-    attention_cell = BahdanauAttention(params.units, passage, passage_length,
-                                       name="pointer_attention", probability_fn=tf.identity, score_mask_value=0)
+    attention_cell = attention_fun(memory=passage, memory_sequence_length=passage_length,
+                                   name="pointer_attention", probability_fn=tf.identity, score_mask_value=0)
     p1, _ = attention_cell(question_pool, None)
 
     context = tf.reduce_sum(tf.expand_dims(tf.nn.softmax(p1), -1) * passage, 1)
@@ -141,7 +144,9 @@ def pointer_net(passage, passage_length, question_pool, params):
 
 
 def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embeddings_np=None):
-    attention_fun = BahdanauAttention if params.attention == 'bahdanau' else LuongAttention
+    attention_fun = partial(BahdanauAttention, num_units=params.units, normalize=True) if params.attention == 'bahdanau' \
+        else partial(LuongAttention, num_units=2 * params.units)
+
     question_words_length = features['question_length']
     passage_words_length = features['passage_length']
 
@@ -169,19 +174,19 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
     passage_words_emb = tf.nn.dropout(passage_words_emb, 1.0 - params.dropout)
 
     with tf.device(next(devices)):
-        with tf.variable_scope('passage_encoding'):
-            passage_enc = encoder(passage_words_emb, passage_words_length, passage_chars_emb,
-                                  features['passage_char_length'], params)
-
-    with tf.device(next(devices)):
         with tf.variable_scope('question_encoding'):
             question_enc = encoder(question_words_emb, question_words_length, question_chars_emb,
                                    features['question_char_length'], params)
+
+    with tf.device(next(devices)):
+        with tf.variable_scope('passage_encoding'):
+            passage_enc = encoder(passage_words_emb, passage_words_length, passage_chars_emb,
+                                  features['passage_char_length'], params)
         # question_enc = tf.Print(question_enc, [question_enc], summarize=1000)
 
         with tf.variable_scope('attention'):
             cell = GatedAttentionWrapper(
-                attention_fun(params.units, question_enc, question_words_length),
+                attention_fun(memory=question_enc, memory_sequence_length=question_words_length),
                 DropoutWrapper(GRUCell(params.units, name="attention_gru"),
                                output_keep_prob=1 - params.dropout, state_keep_prob=1 - params.dropout),
                 dropout=params.dropout
@@ -190,11 +195,13 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
             passage_repr, _ = tf.nn.dynamic_rnn(cell, passage_enc, passage_words_length, dtype=tf.float32)
 
         with tf.variable_scope('pointer'):
-            pool_param = tf.get_variable('pool_param', shape=(params.units,), initializer=tf.initializers.ones)
-            pool_param = tf.reshape(tf.tile(pool_param, [tf.shape(question_enc)[0]]), (-1, params.units))
+            question_att = attention_fun(memory=question_enc, memory_sequence_length=question_words_length,
+                                         name="question_align")
 
-            question_alignments, _ = attention_fun(params.units, question_enc,
-                                                   question_words_length, name="question_align")(pool_param, None)
+            pool_param = tf.get_variable('pool_param', shape=(question_att._num_units,))
+            pool_param = tf.reshape(tf.tile(pool_param, [tf.shape(question_enc)[0]]), (-1, question_att._num_units,))
+
+            question_alignments, _ = question_att(pool_param, None)
             question_pool = tf.reduce_sum(tf.expand_dims(question_alignments, -1) * question_enc, 1)
 
             logits1, logits2 = pointer_net(passage_repr, passage_words_length, question_pool, params)
@@ -309,7 +316,8 @@ def serving_input_fn(params):
         'passage_length': tf.reduce_sum(tf.cast(tf.not_equal(receiver_tensor["context"], ""), tf.int32), -1),
         'passage_char_length': tf.reduce_sum(tf.cast(tf.not_equal(receiver_tensor["context_chars"], ""), tf.int32), -1),
         'question_length': tf.reduce_sum(tf.cast(tf.not_equal(receiver_tensor["question"], ""), tf.int32), -1),
-        'question_char_length': tf.reduce_sum(tf.cast(tf.not_equal(receiver_tensor["question_chars"], ""), tf.int32), -1),
+        'question_char_length': tf.reduce_sum(tf.cast(tf.not_equal(receiver_tensor["question_chars"], ""), tf.int32),
+                                              -1),
     }
 
     return tf.estimator.export.ServingInputReceiver(

@@ -3,6 +3,7 @@ import tensorflow as tf
 from tensorflow.contrib.seq2seq import BahdanauAttention
 from tensorflow.python.layers.core import Dense
 from tensorflow.python.ops.rnn_cell_impl import MultiRNNCell, GRUCell, RNNCell, DropoutWrapper
+from tensorflow.contrib.seq2seq import BahdanauAttention, LuongAttention
 
 
 def biGRU(input, input_length, params, layers=None):
@@ -93,7 +94,8 @@ class GatedAttentionWrapper(AttentionWrapper):
         super(GatedAttentionWrapper, self).__init__(attention_mechanism, *args, **kwargs)
         self._dropout = kwargs.get('dropout', 0.0)
         self._gate = Dense(activation=tf.sigmoid,
-                           units=4 * attention_mechanism._num_units,
+                           units=(2 * attention_mechanism._num_units if isinstance(attention_mechanism, LuongAttention)
+                                  else 4 * attention_mechanism._num_units),
                            use_bias=False,
                            dtype=attention_mechanism.dtype,
                            kernel_initializer=tf.initializers.truncated_normal)
