@@ -421,8 +421,8 @@ def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings, hpa
             serving_input_receiver_fn=partial(serving_input_fn, params=hparams),
             exports_to_keep=1,
             as_text=True)],
-        steps=1,
-        throttle_secs=3600
+        steps=100,
+        throttle_secs=1200
     )
 
     tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
