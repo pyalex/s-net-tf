@@ -187,7 +187,8 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
             cell = GatedAttentionWrapper(
                 attention_fun(memory=question_enc, memory_sequence_length=question_words_length),
                 DropoutWrapper(GRUCell(params.units, name="attention_gru"),
-                               output_keep_prob=1 - dropout, input_keep_prob=1 - dropout),
+                               output_keep_prob=1.0 - dropout, input_keep_prob=1.0 - dropout,
+                               state_keep_prob=1.0 - dropout),
                 dropout=dropout
             )
 
