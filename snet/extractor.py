@@ -108,23 +108,23 @@ def input_fn(tf_files,
     return features, target
 
 
-def encoder(word_emb, word_length, char_emb, char_length, params):
+def encoder(word_emb, word_length, char_emb, char_length, params, dropout=None):
     char_emb = tf.reshape(char_emb,
                           (-1, char_emb.shape[-2], char_emb.shape[-1]))
     char_length = tf.reshape(char_length, (-1,))
 
     with tf.variable_scope('char_encoding'):
-        _, states = biGRU(char_emb, char_length, params, layers=1)
+        _, states = biGRU(char_emb, char_length, params, layers=1, dropout=dropout)
 
     char_emb = tf.reshape(tf.concat(states, 1), (-1, word_emb.shape[1], 2 * params.units))
 
     emb = tf.concat([word_emb, char_emb], 2)
-    enc, _ = biGRU(emb, word_length, params)
+    enc, _ = biGRU(emb, word_length, params, dropout=dropout)
     return enc
 
 
-def pointer_net(passage, passage_length, question_pool, params, attention_fun):
-    question_pool = tf.nn.dropout(question_pool, 1 - params.dropout)
+def pointer_net(passage, passage_length, question_pool, params, attention_fun, dropout):
+    question_pool = tf.nn.dropout(question_pool, 1 - dropout)
 
     attention_cell = attention_fun(memory=passage, memory_sequence_length=passage_length,
                                    name="pointer_attention", probability_fn=tf.identity, score_mask_value=0)
@@ -134,7 +134,7 @@ def pointer_net(passage, passage_length, question_pool, params, attention_fun):
     rnn = GRUCell(params.units * 2, name="pointer_gru")
     _, state = rnn(context, question_pool)
 
-    state = tf.nn.dropout(state, 1 - params.dropout)
+    state = tf.nn.dropout(state, 1 - dropout)
 
     p2, _ = attention_cell(state, None)
     return p1, p2
@@ -143,6 +143,8 @@ def pointer_net(passage, passage_length, question_pool, params, attention_fun):
 def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embeddings_np=None):
     attention_fun = partial(BahdanauAttention, num_units=params.units, normalize=True) if params.attention == 'bahdanau' \
         else partial(LuongAttention, num_units=2 * params.units)
+
+    dropout = params.dropout if mode == tf.estimator.ModeKeys.TRAIN else 0.0
 
     question_words_length = features['question_length']
     passage_words_length = features['passage_length']
@@ -167,26 +169,26 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
     passage_words_emb = tf.nn.embedding_lookup(word_embeddings, features['passage_words'])
     passage_chars_emb = tf.nn.embedding_lookup(char_embeddings, features['passage_chars'])
 
-    question_words_emb = tf.nn.dropout(question_words_emb, 1.0 - params.dropout)
-    passage_words_emb = tf.nn.dropout(passage_words_emb, 1.0 - params.dropout)
+    question_words_emb = tf.nn.dropout(question_words_emb, 1.0 - dropout)
+    passage_words_emb = tf.nn.dropout(passage_words_emb, 1.0 - dropout)
 
     with tf.device(next(devices)):
         with tf.variable_scope('question_encoding'):
             question_enc = encoder(question_words_emb, question_words_length, question_chars_emb,
-                                   features['question_char_length'], params)
+                                   features['question_char_length'], params, dropout=dropout)
 
     with tf.device(next(devices)):
         with tf.variable_scope('passage_encoding'):
             passage_enc = encoder(passage_words_emb, passage_words_length, passage_chars_emb,
-                                  features['passage_char_length'], params)
+                                  features['passage_char_length'], params, dropout=dropout)
         # question_enc = tf.Print(question_enc, [question_enc], summarize=1000)
 
         with tf.variable_scope('attention'):
             cell = GatedAttentionWrapper(
                 attention_fun(memory=question_enc, memory_sequence_length=question_words_length),
                 DropoutWrapper(GRUCell(params.units, name="attention_gru"),
-                               output_keep_prob=1 - params.dropout, input_keep_prob=1 - params.dropout),
-                dropout=params.dropout
+                               output_keep_prob=1 - dropout, input_keep_prob=1 - dropout),
+                dropout=dropout
             )
 
             passage_repr, _ = tf.nn.dynamic_rnn(cell, passage_enc, passage_words_length, dtype=tf.float32)
@@ -202,7 +204,7 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
             question_pool = tf.reduce_sum(tf.expand_dims(question_alignments, -1) * question_enc, 1)
 
             logits1, logits2 = pointer_net(passage_repr, passage_words_length, question_pool,
-                                           params, attention_fun=attention_fun)
+                                           params, attention_fun=attention_fun, dropout=dropout)
 
         outer = tf.matmul(tf.expand_dims(tf.nn.softmax(logits1), axis=2),
                           tf.expand_dims(tf.nn.softmax(logits2), axis=1))
