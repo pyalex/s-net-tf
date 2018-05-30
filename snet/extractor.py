@@ -141,7 +141,7 @@ def pointer_net(passage, passage_length, question_pool, params, attention_fun, d
 
 
 def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embeddings_np=None):
-    attention_fun = partial(BahdanauAttention, num_units=params.units, normalize=True) if params.attention == 'bahdanau' \
+    attention_fun = partial(BahdanauAttention, num_units=params.units) if params.attention == 'bahdanau' \
         else partial(LuongAttention, num_units=2 * params.units)
 
     dropout = params.dropout if mode == tf.estimator.ModeKeys.TRAIN else 0.0
@@ -198,7 +198,7 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
                                          name="question_align")
 
             pool_param = tf.get_variable('pool_param', shape=(question_att._num_units,))
-            pool_param = tf.reshape(tf.tile(pool_param, [tf.shape(question_enc)[0]]), (-1, question_att._num_units,))
+            pool_param = tf.reshape(tf.tile(pool_param, [tf.shape(question_enc)[0]]), (-1, question_att._num_units))
 
             question_alignments, _ = question_att(pool_param, None)
             question_pool = tf.reduce_sum(tf.expand_dims(question_alignments, -1) * question_enc, 1)
