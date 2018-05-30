@@ -123,10 +123,7 @@ def encoder(word_emb, word_length, char_emb, char_length, params):
     return enc
 
 
-def pointer_net(passage, passage_length, question_pool, params):
-    attention_fun = partial(BahdanauAttention, num_units=params.units, normalize=True) if params.attention == 'bahdanau' \
-        else partial(LuongAttention, num_units=2 * params.units)
-
+def pointer_net(passage, passage_length, question_pool, params, attention_fun):
     question_pool = tf.nn.dropout(question_pool, 1 - params.dropout)
 
     attention_cell = attention_fun(memory=passage, memory_sequence_length=passage_length,
@@ -188,7 +185,7 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
             cell = GatedAttentionWrapper(
                 attention_fun(memory=question_enc, memory_sequence_length=question_words_length),
                 DropoutWrapper(GRUCell(params.units, name="attention_gru"),
-                               output_keep_prob=1 - params.dropout, state_keep_prob=1 - params.dropout),
+                               output_keep_prob=1 - params.dropout, input_keep_prob=1 - params.dropout),
                 dropout=params.dropout
             )
 
@@ -204,7 +201,8 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
             question_alignments, _ = question_att(pool_param, None)
             question_pool = tf.reduce_sum(tf.expand_dims(question_alignments, -1) * question_enc, 1)
 
-            logits1, logits2 = pointer_net(passage_repr, passage_words_length, question_pool, params)
+            logits1, logits2 = pointer_net(passage_repr, passage_words_length, question_pool,
+                                           params, attention_fun=attention_fun)
 
         outer = tf.matmul(tf.expand_dims(tf.nn.softmax(logits1), axis=2),
                           tf.expand_dims(tf.nn.softmax(logits2), axis=1))
@@ -350,7 +348,7 @@ def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings, hpa
         max_steps=1000,
         units=150,
         layers=2,
-        dropout=0.2,
+        dropout=0.1,
         question_max_words=30,
         question_max_chars=16,
         passage_max_words=800,
