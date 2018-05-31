@@ -8,12 +8,10 @@ from tensorflow.contrib.seq2seq import BahdanauAttention, LuongAttention
 def biGRU(input, input_length, params, dropout=None, layers=None):
     dropout = dropout or params.dropout
     cell_fw = MultiRNNCell([DropoutWrapper(GRUCell(params.units),
-                                           output_keep_prob=1.0 - dropout, input_keep_prob=1.0 - dropout,
-                                           state_keep_prob=1.0 - dropout)
+                                           output_keep_prob=1.0 - dropout, input_keep_prob=1.0 - dropout)
                             for _ in range(layers or params.layers)])
     cell_bw = MultiRNNCell([DropoutWrapper(GRUCell(params.units),
-                                           output_keep_prob=1.0 - dropout, input_keep_prob=1.0 - dropout,
-                                           state_keep_prob=1.0 - dropout)
+                                           output_keep_prob=1.0 - dropout, input_keep_prob=1.0 - dropout)
                             for _ in range(layers or params.layers)])
 
     output, states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, input,
