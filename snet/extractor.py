@@ -15,7 +15,7 @@ from tensorflow.python.layers.core import Dense
 from tensorflow.python.ops.rnn_cell_impl import GRUCell, DropoutWrapper
 
 from snet.helpers import biGRU, pad_to_shape_2d, ReusableBahdanauAttention, GatedAttentionWrapper
-from snet.metrics import f1_metric
+from snet.metrics import extraction_metric
 from snet.utils import helpers
 
 
@@ -270,7 +270,7 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
         if params.r < 1 else tf.reduce_mean(loss1 + loss2)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
-        optimizer = tf.train.AdadeltaOptimizer(learning_rate=1)
+        optimizer = tf.train.AdadeltaOptimizer(learning_rate=params.learning_rate, epsilon=1e-6)
         global_step = tf.train.get_or_create_global_step()
 
         grads = optimizer.compute_gradients(loss)
@@ -288,10 +288,16 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
         table = lookup_ops.index_to_string_table_from_file(params.word_vocab_file,
                                                            value_column_index=0, delimiter=" ")
         return EstimatorSpec(
-            mode, loss=loss, eval_metric_ops={'f1': f1_metric(p1, p2, tf.argmax(answer_start, -1),
-                                                              tf.argmax(answer_end, -1),
-                                                              features['answer_tokens'],
-                                                              features['passage_words'], params, table)}
+            mode, loss=loss, eval_metric_ops={
+                'rouge-l': extraction_metric(p1, p2,
+                                             tf.argmax(answer_start, -1),
+                                             tf.argmax(answer_end, -1),
+                                             features['passage_words'], params, table),
+                'f1': extraction_metric(p1, p2,
+                                        tf.argmax(answer_start, -1),
+                                        tf.argmax(answer_end, -1),
+                                        features['passage_words'], params, table, metric='f1')
+            }
         )
 
 
@@ -351,6 +357,7 @@ def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings, hpa
         units=150,
         layers=2,
         dropout=0.1,
+        learning_rate=0.5,
         question_max_words=30,
         question_max_chars=16,
         passage_max_words=800,
@@ -368,6 +375,7 @@ def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings, hpa
         attention='bahdanau'
     )
     hparams = hparams_.parse(hparams)
+    print(hparams)
 
     config = tf.ConfigProto()
     config.allow_soft_placement = True

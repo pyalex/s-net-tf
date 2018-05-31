@@ -1,25 +1,22 @@
 import tensorflow as tf
 
 
-def f1_metric(p1, p2, tp1, tp2, answers, passage, hparams, table):
+def extraction_metric(p1, p2, tp1, tp2, passage, hparams, table, metric='rouge-l'):
     p1 = tf.unstack(p1, hparams.batch_size)
     p2 = tf.unstack(p2, hparams.batch_size)
     tp1 = tf.unstack(tp1, hparams.batch_size)
     tp2 = tf.unstack(tp2, hparams.batch_size)
-    answers = tf.sparse_tensor_to_dense(answers, '')
-    answers = tf.unstack(answers, hparams.batch_size)
     passage = tf.unstack(passage, hparams.batch_size)
 
     f1 = []
-    for p1_, p2_, tp1_, tp2_, answer, context in zip(p1, p2, tp1, tp2, answers, passage):
-        answer = tf.boolean_mask(answer, tf.not_equal(answer, ''))
-
+    for p1_, p2_, tp1_, tp2_, context in zip(p1, p2, tp1, tp2, passage):
         prediction = table.lookup(context[p1_:p2_])
         tr_answer = table.lookup(context[tp1_:tp2_])
 
-        prediction = tf.Print(prediction, [prediction, tr_answer, answer], summarize=100)
+        prediction = tf.Print(prediction, [prediction, tr_answer], summarize=100)
 
-        intersection = tf.py_func(lcs, [prediction, tr_answer], tf.int64, stateful=False)
+        intersection = tf.py_func(lcs if metric == 'rouge-l' else intersect,
+                                  [prediction, tr_answer], tf.int64, stateful=False)
         intersection = tf.cast(intersection, tf.int32)
 
         precision = intersection / tf.size(prediction)
@@ -62,6 +59,10 @@ def lcs(x, y):
                 table[i, j] = max(table[i - 1, j], table[i, j - 1])
 
     return table[n, m]
+
+
+def intersect(x, y):
+    return len(set(x) & set(y))
 
 
 def rouge_l(prediction, target, prediction_length, answer_length, params, table):
