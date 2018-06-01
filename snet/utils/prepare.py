@@ -89,7 +89,7 @@ def find_answer(passage, answer):
     return answer_start, answer_end + 1
 
 
-def load(input_filename, passage_words_max=800, only_selected=False) -> typing.Iterator[example]:
+def load(input_filename, passage_words_max=800, answer_words_max=50, only_selected=False) -> typing.Iterator[example]:
     f = open(input_filename, 'r')
     items = ujson.loads(f.readline())
 
@@ -136,6 +136,10 @@ def load(input_filename, passage_words_max=800, only_selected=False) -> typing.I
         for answer in answers:
             answer = clean(answer)
             tokens = word_tokenize(answer)
+
+            if len(tokens) > answer_words_max:
+                continue
+
             start, end = find_answer(passage_tokens, tokens)
 
             if end - start > 2 * len(tokens):
@@ -215,6 +219,7 @@ def load_embeddings(filename):
 @cli.command()
 @click.option('--passage-words-max', default=800, type=int)
 @click.option('--question-words-max', default=30, type=int)
+@click.option('--answer-words-max', default=50, type=int)
 @click.option('--passage-count', default=10, type=int)
 @click.option('--char-max', default=16, type=int)
 @click.option('--word-embedding', default='data/glove.6B.300d.txt')
@@ -222,9 +227,9 @@ def load_embeddings(filename):
 @click.option('--limit', default=None, type=int)
 @click.option('--tf-output')
 @click.argument('data-file')
-def extraction(tf_output, passage_words_max, question_words_max, passage_count,
+def extraction(tf_output, passage_words_max, question_words_max, answer_words_max, passage_count,
                char_max, word_embedding, char_embedding, limit, data_file):
-    examples = load(data_file, passage_words_max=passage_words_max)
+    examples = load(data_file, passage_words_max=passage_words_max, answer_words_max=answer_words_max)
     if limit:
         examples = itertools.islice(examples, 0, limit)
 
