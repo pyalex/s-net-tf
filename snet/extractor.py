@@ -12,7 +12,7 @@ from tensorflow.contrib.training import HParams
 from tensorflow.python.client import device_lib
 from tensorflow.python.estimator.model_fn import EstimatorSpec
 from tensorflow.python.layers.core import Dense
-from tensorflow.python.ops.rnn_cell_impl import GRUCell, DropoutWrapper
+from tensorflow.python.ops.rnn_cell_impl import GRUCell, DropoutWrapper, MultiRNNCell
 
 from snet.helpers import biGRU, pad_to_shape_2d, ReusableBahdanauAttention, GatedAttentionWrapper
 from snet.metrics import extraction_metric
@@ -186,8 +186,9 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
         with tf.variable_scope('attention'):
             cell = GatedAttentionWrapper(
                 attention_fun(memory=question_enc, memory_sequence_length=question_words_length),
-                DropoutWrapper(GRUCell(params.units, name="attention_gru"),
-                               output_keep_prob=1 - dropout, input_keep_prob=1 - dropout),
+                MultiRNNCell([DropoutWrapper(GRUCell(params.units, name="attention_gru"),
+                                             output_keep_prob=1 - dropout, input_keep_prob=1 - dropout)
+                              for _ in range(2)]),
                 dropout=dropout
             )
 
@@ -197,7 +198,8 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
             question_att = attention_fun(memory=question_enc, memory_sequence_length=question_words_length,
                                          name="question_align")
 
-            pool_param = tf.get_variable('pool_param', shape=(question_att._num_units,))
+            pool_param = tf.get_variable('pool_param',
+                                         shape=(question_att._num_units,), initializer=tf.initializers.ones)
             pool_param = tf.reshape(tf.tile(pool_param, [tf.shape(question_enc)[0]]), (-1, question_att._num_units))
 
             question_alignments, _ = question_att(pool_param, None)
