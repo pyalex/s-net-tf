@@ -169,8 +169,8 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
     passage_words_emb = tf.nn.embedding_lookup(word_embeddings, features['passage_words'])
     passage_chars_emb = tf.nn.embedding_lookup(char_embeddings, features['passage_chars'])
 
-    question_words_emb = tf.nn.dropout(question_words_emb, 1.0 - dropout)
-    passage_words_emb = tf.nn.dropout(passage_words_emb, 1.0 - dropout)
+    # question_words_emb = tf.nn.dropout(question_words_emb, 1.0 - dropout)
+    # passage_words_emb = tf.nn.dropout(passage_words_emb, 1.0 - dropout)
 
     with tf.device(next(devices)):
         with tf.variable_scope('question_encoding'):
