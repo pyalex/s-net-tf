@@ -187,10 +187,11 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
             cell = GatedAttentionWrapper(
                 attention_fun(memory=question_enc, memory_sequence_length=question_words_length),
                 MultiRNNCell([DropoutWrapper(GRUCell(params.units, name="attention_gru"),
-                                             output_keep_prob=1.0 - dropout, input_keep_prob=1.0 - dropout,
+                                             output_keep_prob=1.0 - dropout,
+                                             # input_keep_prob=1.0 - dropout,
                                              # state_keep_prob=1.0 - dropout
                                              )
-                              for _ in range(2)]),
+                              for _ in range(1)]),
                 dropout=dropout
             )
 
