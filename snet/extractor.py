@@ -187,18 +187,30 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
         # question_enc = tf.Print(question_enc, [question_enc], summarize=1000)
 
         with tf.variable_scope('attention'):
-            cell = GatedAttentionWrapper(
-                attention_fun(memory=question_enc, memory_sequence_length=question_words_length),
-                MultiRNNCell([DropoutWrapper(GRUCell(params.units, name="attention_gru"),
-                                             output_keep_prob=1.0 - dropout,
-                                             # input_keep_prob=1.0 - dropout,
-                                             # state_keep_prob=1.0 - dropout
-                                             )
-                              for _ in range(1)]),
-                dropout=dropout
+            attention = attention_fun(memory=question_enc, memory_sequence_length=question_words_length)
+            cell_fw = GatedAttentionWrapper(
+                attention,
+                DropoutWrapper(GRUCell(params.units, name="attention_gru"),
+                               # output_keep_prob=1.0 - dropout,
+                               input_keep_prob=1.0 - dropout,
+                               # state_keep_prob=1.0 - dropout
+                               ),
+                dropout=0
             )
 
-            passage_repr, _ = tf.nn.dynamic_rnn(cell, passage_enc, passage_words_length, dtype=tf.float32)
+            cell_bw = GatedAttentionWrapper(
+                attention,
+                DropoutWrapper(GRUCell(params.units, name="attention_gru"),
+                               # output_keep_prob=1.0 - dropout,
+                               input_keep_prob=1.0 - dropout,
+                               # state_keep_prob=1.0 - dropout
+                               ),
+                dropout=0
+            )
+
+            passage_repr, _ = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw,
+                                                              passage_enc, passage_words_length, dtype=tf.float32)
+            passage_repr = tf.concat(passage_repr, -1)
 
         with tf.variable_scope('pointer'):
             question_att = attention_fun(memory=question_enc, memory_sequence_length=question_words_length,
