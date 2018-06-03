@@ -111,7 +111,7 @@ def load(input_filename, passage_words_max=800, answer_words_max=50, only_select
         if only_selected:
             passages = [p for p in passages if p['is_selected']]
 
-        for idx, p in enumerate(passages):
+        for idx, p in enumerate(passages[:10]):
             text = clean(p['passage_text'])
             tokens = word_tokenize(text)
 
@@ -124,7 +124,7 @@ def load(input_filename, passage_words_max=800, answer_words_max=50, only_select
         if not only_selected and (not all(partitions_len) or len(partitions_len) != 10):
             continue
 
-        passage_ranks = [p['is_selected'] for p in passages]
+        passage_ranks = [p['is_selected'] for p in passages[:10]]
         passage_chars = [list(token) for token in passage_tokens]
 
         question = clean(items['query'][key])

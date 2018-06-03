@@ -63,27 +63,30 @@ def input_fn(tf_files,
              num_epochs=1,
              batch_size=100):
     buffer_size = 2 * batch_size + 1
+    passage_max_words = hparams.passage_max_words if mode != tf.estimator.ModeKeys.TRAIN \
+        else hparams.train_passage_max_words
+
     features_map = dict(
-        passage_words=tf.FixedLenFeature((hparams.passage_max_words,), tf.int64),
+        passage_words=tf.FixedLenFeature((passage_max_words,), tf.int64),
         question_words=tf.FixedLenFeature((hparams.question_max_words,), tf.int64),
-        passage_chars=tf.FixedLenFeature((hparams.passage_max_words * hparams.passage_max_chars,), tf.int64),
+        passage_chars=tf.FixedLenFeature((passage_max_words * hparams.passage_max_chars,), tf.int64),
         question_chars=tf.FixedLenFeature((hparams.question_max_words * hparams.question_max_chars,), tf.int64),
         passage_length=tf.FixedLenFeature((), tf.int64),
         question_length=tf.FixedLenFeature((), tf.int64),
-        passage_char_length=tf.FixedLenFeature((hparams.passage_max_words,), tf.int64),
+        passage_char_length=tf.FixedLenFeature((passage_max_words,), tf.int64),
         question_char_length=tf.FixedLenFeature((hparams.question_max_words,), tf.int64),
-        y1=tf.FixedLenFeature((hparams.passage_max_words,), tf.float32),
-        y2=tf.FixedLenFeature((hparams.passage_max_words,), tf.float32),
+        y1=tf.FixedLenFeature((passage_max_words,), tf.float32),
+        y2=tf.FixedLenFeature((passage_max_words,), tf.float32),
         answer_tokens=tf.VarLenFeature(tf.string),
         passage_ranks=tf.FixedLenFeature((hparams.passage_count,), tf.float32),
-        partitions=tf.FixedLenFeature((hparams.passage_max_words,), tf.int64),
+        partitions=tf.FixedLenFeature((passage_max_words,), tf.int64),
         partitions_len=tf.FixedLenFeature((hparams.passage_count,), tf.int64)
     )
 
     def parse(example):
         features = tf.parse_single_example(example, features_map)
         features['passage_chars'] = tf.reshape(features['passage_chars'],
-                                               (hparams.passage_max_words, hparams.passage_max_chars))
+                                               (passage_max_words, hparams.passage_max_chars))
         features['question_chars'] = tf.reshape(features['question_chars'],
                                                 (hparams.question_max_words, hparams.question_max_chars))
 
@@ -366,6 +369,7 @@ def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings, hpa
         question_max_words=30,
         question_max_chars=16,
         passage_max_words=800,
+        train_passage_max_words=400,
         passage_max_chars=16,
         vocab_size=word_embeddings_np.shape[0],
         emb_size=300,
