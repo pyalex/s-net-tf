@@ -8,6 +8,7 @@ import click
 import itertools
 
 import tensorflow as tf
+from snet.metrics import lcs
 
 nlp = spacy.blank("en")
 
@@ -15,7 +16,7 @@ example = namedtuple('example', ['passage_tokens', 'passage_chars',
                                  'question_tokens', 'question_chars',
                                  'answer_start', 'answer_end', 'answer_tokens',
                                  'partitions', 'partitions_len',
-                                 'passage_ranks'])
+                                 'passage_ranks', 'rouge_l'])
 
 _known_words = Counter()
 
@@ -121,7 +122,7 @@ def load(input_filename, passage_words_max=800, answer_words_max=50, only_select
             partitions.extend([idx] * len(tokens))
             partitions_len.append(len(tokens))
 
-        if not only_selected and (not all(partitions_len) or len(partitions_len) != 10):
+        if not only_selected and passage_words_max >= 800 and (not all(partitions_len) or len(partitions_len) != 10):
             continue
 
         passage_ranks = [p['is_selected'] for p in passages[:10]]
@@ -137,23 +138,30 @@ def load(input_filename, passage_words_max=800, answer_words_max=50, only_select
             answer = clean(answer)
             tokens = word_tokenize(answer)
 
-            if len(tokens) > answer_words_max:
-                continue
-
             start, end = find_answer(passage_tokens, tokens)
 
-            if end - start > 2 * len(tokens):
+            if (end - start) > answer_words_max:
                 continue
 
-            answer_candidates.append((tokens, (start, end)))
+            # rouge-l check
+            common = lcs(tokens, passage_tokens[start:end])
+            precision = common / (end - start)
+            recall = common / len(tokens)
+
+            rouge_l = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+
+            if rouge_l < 0.9:
+                continue
+
+            answer_candidates.append((tokens, (start, end), rouge_l))
 
         if not answer_candidates:
             continue
 
-        answer_tokens, (answer_start, answer_end) = sorted(answer_candidates, key=lambda x: len(x[0]))[0]
+        answer_tokens, (answer_start, answer_end), rouge_l = sorted(answer_candidates, key=lambda x: x[2], reverse=True)[0]
 
         yield example(passage_tokens, passage_chars, question_tokens, question_chars,
-                      answer_start, answer_end, answer_tokens, partitions, partitions_len, passage_ranks)
+                      answer_start, answer_end, answer_tokens, partitions, partitions_len, passage_ranks, rouge_l)
 
 
 @click.group()
@@ -217,7 +225,7 @@ def load_embeddings(filename):
 
 
 @cli.command()
-@click.option('--passage-words-max', default=800, type=int)
+@click.option('--passage-words-max', default=400, type=int)
 @click.option('--question-words-max', default=30, type=int)
 @click.option('--answer-words-max', default=50, type=int)
 @click.option('--passage-count', default=10, type=int)

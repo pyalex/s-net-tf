@@ -1,4 +1,5 @@
 import tensorflow as tf
+import numpy as np
 
 
 def extraction_metric(p1, p2, tp1, tp2, passage, hparams, table, metric='rouge-l'):
@@ -48,12 +49,10 @@ def lcs(x, y):
       Table of dictionary of coord and len lcs
     """
     n, m = len(x), len(y)
-    table = dict()
-    for i in range(n + 1):
-        for j in range(m + 1):
-            if i == 0 or j == 0:
-                table[i, j] = 0
-            elif x[i - 1] == y[j - 1]:
+    table = np.zeros((n + 1, m + 1))
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            if x[i - 1] == y[j - 1]:
                 table[i, j] = table[i - 1, j - 1] + 1
             else:
                 table[i, j] = max(table[i - 1, j], table[i, j - 1])
@@ -88,3 +87,8 @@ def rouge_l(prediction, target, prediction_length, answer_length, params, table)
                              lambda: tf.constant(.0, dtype=tf.float64)))
 
     return tf.metrics.mean(tf.stack(rouge))
+
+
+if __name__ == '__main__':
+    lcs(['shelton', 'is', 'in', 'fairfield', 'county', ',', 'connecticut', ',', 'united', 'states'],
+        ['shelton', 'is', 'a', 'city', 'in', 'fairfield', 'county', ',', 'connecticut', ',', 'united', 'states'])
