@@ -49,7 +49,7 @@ def lcs(x, y):
       Table of dictionary of coord and len lcs
     """
     n, m = len(x), len(y)
-    table = np.zeros((n + 1, m + 1))
+    table = np.zeros((n + 1, m + 1), np.int64)
     for i in range(1, n + 1):
         for j in range(1, m + 1):
             if x[i - 1] == y[j - 1]:
