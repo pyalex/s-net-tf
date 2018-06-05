@@ -90,7 +90,8 @@ def find_answer(passage, answer):
     return answer_start, answer_end + 1
 
 
-def load(input_filename, passage_words_max=800, answer_words_max=50, only_selected=False) -> typing.Iterator[example]:
+def load(input_filename, passage_words_max=800,
+         answer_words_max=50, partitions_max=10, only_selected=False) -> typing.Iterator[example]:
     f = open(input_filename, 'r')
     items = ujson.loads(f.readline())
 
@@ -112,7 +113,7 @@ def load(input_filename, passage_words_max=800, answer_words_max=50, only_select
         if only_selected:
             passages = [p for p in passages if p['is_selected']]
 
-        for idx, p in enumerate(passages[:10]):
+        for idx, p in enumerate(passages[:partitions_max]):
             text = clean(p['passage_text'])
             tokens = word_tokenize(text)
 
@@ -122,10 +123,10 @@ def load(input_filename, passage_words_max=800, answer_words_max=50, only_select
             partitions.extend([idx] * len(tokens))
             partitions_len.append(len(tokens))
 
-        if not only_selected and passage_words_max >= 800 and (not all(partitions_len) or len(partitions_len) != 10):
+        if not only_selected and (not all(partitions_len) or len(partitions_len) != partitions_max):
             continue
 
-        passage_ranks = [p['is_selected'] for p in passages[:10]]
+        passage_ranks = [p['is_selected'] for p in passages[:partitions_max]]
         passage_chars = [list(token) for token in passage_tokens]
 
         question = clean(items['query'][key])
@@ -237,7 +238,10 @@ def load_embeddings(filename):
 @click.argument('data-file')
 def extraction(tf_output, passage_words_max, question_words_max, answer_words_max, passage_count,
                char_max, word_embedding, char_embedding, limit, data_file):
-    examples = load(data_file, passage_words_max=passage_words_max, answer_words_max=answer_words_max)
+    examples = load(data_file,
+                    passage_words_max=passage_words_max,
+                    answer_words_max=answer_words_max,
+                    partitions_max=passage_count)
     if limit:
         examples = itertools.islice(examples, 0, limit)
 
