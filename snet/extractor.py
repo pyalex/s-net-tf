@@ -63,8 +63,11 @@ def input_fn(tf_files,
              num_epochs=1,
              batch_size=100):
     buffer_size = 2 * batch_size + 1
+
     passage_max_words = hparams.passage_max_words if mode != tf.estimator.ModeKeys.TRAIN \
         else hparams.train_passage_max_words
+    passage_count = hparams.passage_count if mode != tf.estimator.ModeKeys.TRAIN \
+        else hparams.train_passage_count
 
     features_map = dict(
         passage_words=tf.FixedLenFeature((passage_max_words,), tf.int64),
@@ -78,9 +81,9 @@ def input_fn(tf_files,
         y1=tf.FixedLenFeature((passage_max_words,), tf.float32),
         y2=tf.FixedLenFeature((passage_max_words,), tf.float32),
         answer_tokens=tf.VarLenFeature(tf.string),
-        passage_ranks=tf.FixedLenFeature((hparams.passage_count,), tf.float32),
+        passage_ranks=tf.FixedLenFeature((passage_count,), tf.float32),
         partitions=tf.FixedLenFeature((passage_max_words,), tf.int64),
-        partitions_len=tf.FixedLenFeature((hparams.passage_count,), tf.int64)
+        partitions_len=tf.FixedLenFeature((passage_count,), tf.int64)
     )
 
     def parse(example):
@@ -148,6 +151,8 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
         else partial(LuongAttention, num_units=2 * params.units)
 
     dropout = params.dropout if mode == tf.estimator.ModeKeys.TRAIN else 0.0
+    passage_count = params.passage_count if mode != tf.estimator.ModeKeys.TRAIN \
+        else params.train_passage_count
 
     question_words_length = features['question_length']
     passage_words_length = features['passage_length']
@@ -256,7 +261,7 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
             )
             g = []
 
-            for i in range(params.passage_count):
+            for i in range(passage_count):
                 passage_mask = tf.boolean_mask(passage_repr, tf.equal(features['partitions'], i))
                 passage_i = tf.split(passage_mask, features['partitions_len'][:, i])
                 passage_i = [pad_to_shape_2d(p, (tf.Dimension(params.passage_max_len), p.shape[1])) for p in passage_i]
@@ -390,6 +395,7 @@ def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings, hpa
         word_vocab_file=word_embeddings,
         char_vocab_file=char_embeddings,
         passage_count=10,
+        train_passage_count=5,
         passage_max_len=120,
         r=0.8,
         grad_clip=5.0,
