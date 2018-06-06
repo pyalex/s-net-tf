@@ -3,6 +3,7 @@ import tensorflow as tf
 from tensorflow.python.layers.core import Dense
 from tensorflow.python.ops.rnn_cell_impl import MultiRNNCell, GRUCell, RNNCell, DropoutWrapper
 from tensorflow.contrib.seq2seq import BahdanauAttention, LuongAttention
+from tensorflow.contrib.seq2seq.python.ops.attention_wrapper import _bahdanau_score
 
 
 def biGRU(input, input_length, params, dropout=None, layers=None):
@@ -60,6 +61,16 @@ class ReusableBahdanauAttention(BahdanauAttention):
         self._num_units = num_units
         self._normalize = normalize
         self._name = name
+
+    def __call__(self, query, state):
+        processed_query = self.query_layer(query) if self.query_layer else query
+
+        with tf.variable_scope("bahdanau_attention", reuse=tf.AUTO_REUSE):
+            score = _bahdanau_score(processed_query, self._keys, self._normalize)
+
+        alignments = self._probability_fn(score, state)
+        next_state = alignments
+        return alignments, next_state
 
 
 class AttentionWrapper(RNNCell):
