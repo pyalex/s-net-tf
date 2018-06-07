@@ -130,7 +130,7 @@ def encoder(word_emb, word_length, char_emb, char_length, params, dropout=None):
 
 
 def pointer_net(passage, passage_length, question_pool, params, attention_fun, dropout):
-    question_pool = tf.nn.dropout(question_pool, 1 - dropout)
+    # question_pool = tf.nn.dropout(question_pool, 1 - dropout)
 
     attention_cell = attention_fun(memory=passage, memory_sequence_length=passage_length,
                                    name="pointer_attention", probability_fn=tf.identity, score_mask_value=0)
@@ -171,14 +171,14 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
         word_embeddings = tf.Variable(word_embeddings_placeholder, trainable=False, name="word_embeddings")
         char_embeddings = tf.Variable(char_embeddings_placeholder, trainable=False, name="char_embeddings")
 
+        word_embeddings = tf.nn.dropout(word_embeddings, 1.0 - dropout, noise_shape=[params.vocab_size, 1])
+        char_embeddings = tf.nn.dropout(char_embeddings, 1.0 - dropout, noise_shape=[params.char_vocab_size, 1])
+
     question_words_emb = tf.nn.embedding_lookup(word_embeddings, features['question_words'])
     question_chars_emb = tf.nn.embedding_lookup(char_embeddings, features['question_chars'])
 
     passage_words_emb = tf.nn.embedding_lookup(word_embeddings, features['passage_words'])
     passage_chars_emb = tf.nn.embedding_lookup(char_embeddings, features['passage_chars'])
-
-    # question_words_emb = tf.nn.dropout(question_words_emb, 1.0 - dropout)
-    # passage_words_emb = tf.nn.dropout(passage_words_emb, 1.0 - dropout)
 
     with tf.device(next(devices)):
         with tf.variable_scope('question_encoding'):
@@ -198,7 +198,10 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
                 DropoutWrapper(GRUCell(params.units, name="attention_gru"),
                                # output_keep_prob=1.0 - dropout,
                                input_keep_prob=1.0 - dropout,
-                               # state_keep_prob=1.0 - dropout
+                               # state_keep_prob=1.0 - dropout,
+                               variational_recurrent=True,
+                               input_size=4 * params.units,
+                               dtype=tf.float32
                                ),
                 dropout=0
             )
@@ -209,6 +212,9 @@ def model_fn(features, labels, mode, params, word_embeddings_np=None, char_embed
                                # output_keep_prob=1.0 - dropout,
                                input_keep_prob=1.0 - dropout,
                                # state_keep_prob=1.0 - dropout
+                               variational_recurrent=True,
+                               input_size=4 * params.units,
+                               dtype=tf.float32
                                ),
                 dropout=0
             )

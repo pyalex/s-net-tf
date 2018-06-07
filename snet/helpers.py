@@ -11,15 +11,23 @@ def biGRU(input, input_length, params, dropout=None, layers=None):
     cell_fw = MultiRNNCell([DropoutWrapper(GRUCell(params.units),
                                            # output_keep_prob=1.0 - dropout,
                                            input_keep_prob=1.0 - dropout,
-                                           # state_keep_prob=1.0 - dropout
+                                           # state_keep_prob=1.0 - dropout,
+                                           variational_recurrent=True,
+                                           dtype=tf.float32,
+                                           input_size=input.get_shape()[-1] if layer == 0 else tf.TensorShape(
+                                               params.units)
                                            )
-                            for _ in range(layers or params.layers)])
+                            for layer in range(layers or params.layers)])
     cell_bw = MultiRNNCell([DropoutWrapper(GRUCell(params.units),
                                            # output_keep_prob=1.0 - dropout,
                                            input_keep_prob=1.0 - dropout,
-                                           # state_keep_prob=1.0 - dropout
+                                           # state_keep_prob=1.0 - dropout,
+                                           variational_recurrent=True,
+                                           dtype=tf.float32,
+                                           input_size=input.get_shape()[-1] if layer == 0 else tf.TensorShape(
+                                               params.units)
                                            )
-                            for _ in range(layers or params.layers)])
+                            for layer in range(layers or params.layers)])
 
     output, states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, input,
                                                      sequence_length=input_length,
