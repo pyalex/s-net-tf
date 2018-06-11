@@ -365,8 +365,8 @@ def serving_input_fn(params):
 @click.command()
 @click.option('--model-dir')
 @click.option('--train-data', default='data/train.tf')
-@click.option('--eval-data', default='data/dev.tf')
-@click.option('--word-embeddings', default='data/glove.6B.300d.txt')
+@click.option('--eval-data', default='data/dev.new.tf')
+@click.option('--word-embeddings', default='data/glove.42B.reduced.all.300d.txt')
 @click.option('--char-embeddings', default='data/glove.840B.300d-char.txt')
 @click.option('--hparams', default='', type=str, help='Comma separated list of "name=value" pairs.')
 @click.option('--log-devices', type=bool, default=False)
@@ -384,10 +384,10 @@ def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings, hpa
     hparams_ = HParams(
         num_epochs=10,
         batch_size=16,
-        max_steps=1000,
-        units=150,
-        layers=2,
-        dropout=0.1,
+        max_steps=100,
+        units=50,
+        layers=3,
+        dropout=0.0,
         learning_rate=0.5,
         question_max_words=30,
         question_max_chars=16,
@@ -405,7 +405,7 @@ def main(model_dir, train_data, eval_data, word_embeddings, char_embeddings, hpa
         passage_max_len=120,
         r=0.8,
         grad_clip=5.0,
-        attention='bahdanau'
+        attention='luong'
     )
     hparams = hparams_.parse(hparams)
     print(hparams)

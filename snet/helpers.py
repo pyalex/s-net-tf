@@ -11,7 +11,7 @@ def biGRU(input, input_length, params, dropout=None, layers=None):
     cell_fw = MultiRNNCell([DropoutWrapper(GRUCell(params.units),
                                            # output_keep_prob=1.0 - dropout,
                                            input_keep_prob=1.0 - dropout,
-                                           # state_keep_prob=1.0 - dropout,
+                                           state_keep_prob=1.0 - dropout,
                                            variational_recurrent=True,
                                            dtype=tf.float32,
                                            input_size=input.get_shape()[-1] if layer == 0 else tf.TensorShape(
@@ -21,7 +21,7 @@ def biGRU(input, input_length, params, dropout=None, layers=None):
     cell_bw = MultiRNNCell([DropoutWrapper(GRUCell(params.units),
                                            # output_keep_prob=1.0 - dropout,
                                            input_keep_prob=1.0 - dropout,
-                                           # state_keep_prob=1.0 - dropout,
+                                           state_keep_prob=1.0 - dropout,
                                            variational_recurrent=True,
                                            dtype=tf.float32,
                                            input_size=input.get_shape()[-1] if layer == 0 else tf.TensorShape(

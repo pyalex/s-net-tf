@@ -1,6 +1,7 @@
 import tensorflow as tf
 import multiprocessing
 import click
+from functools import partial
 
 from tensorflow.contrib.seq2seq import BahdanauAttention, AttentionWrapper, BasicDecoder,\
     GreedyEmbeddingHelper, TrainingHelper, dynamic_decode, BasicDecoderOutput
@@ -31,23 +32,25 @@ def masked_concat(a, b, a_length, b_length):
 
 class SNetDecoder(BasicDecoder):
     def __init__(self, *args, **kwargs):
-        params = kwargs.pop('params')
+        self.params = kwargs.pop('params')
 
         super(SNetDecoder, self).__init__(*args, **kwargs)
 
-        self.W_r = Dense(2 * params.units, use_bias=False)
-        self.U_r = Dense(2 * params.units, use_bias=False)
-        self.V_r = Dense(2 * params.units, use_bias=False)
-        self.maxout = lambda inputs: maxout(inputs, params.units)
+        self.W_r = Dense(2 * self.params.units, use_bias=False)
+        self.U_r = Dense(2 * self.params.units, use_bias=False)
+        self.V_r = Dense(2 * self.params.units, use_bias=False)
+        self.maxout = lambda inputs: maxout(inputs, self.params.units)
 
     def _readout(self, inputs, outputs, attention):
         r_t = self.W_r(inputs) + self.U_r(attention) + self.V_r(outputs)
         m_t = self.maxout(r_t)
+        # m_t.set_shape((self.params.batch_size, self.params.units))
         return m_t
 
     def step(self, time, inputs, state, name=None):
         with ops.name_scope(name, "BasicDecoderStep", (time, inputs, state)):
             cell_outputs, cell_state = self._cell(inputs, state)
+            # cell_outputs.set_shape((self.params.batch_size, 4 * self.params.units))
 
             cell_outputs = self._readout(inputs, cell_outputs, state.attention)
 
@@ -109,6 +112,7 @@ def input_fn(tf_files,
 
 def model_fn(features, labels, mode, params):
     embedding_encoder = tf.get_variable('embedding_encoder', shape=(params.vocab_size, params.emb_size))
+    table = lookup_ops.index_to_string_table_from_file(params.word_vocab_file)
 
     question_emb = tf.nn.embedding_lookup(embedding_encoder, features['question_words'])
     passage_emb = tf.nn.embedding_lookup(embedding_encoder, features['passage_words'])
@@ -143,24 +147,39 @@ def model_fn(features, labels, mode, params):
         [question_att, passage_att],
         initial_cell_state=decoder_init_state)
 
+    batch_size = params.batch_size # if mode != tf.estimator.ModeKeys.PREDICT else 1
+
     if mode == tf.estimator.ModeKeys.TRAIN:
         answer_emb = tf.nn.embedding_lookup(embedding_encoder, features['answer_words'])
         helper = TrainingHelper(answer_emb, features['answer_length'])
     else:
         helper = GreedyEmbeddingHelper(
             embedding_encoder,
-            tf.fill([params.batch_size], params.tgt_sos_id), params.tgt_eos_id)
+            tf.fill([batch_size], params.tgt_sos_id), params.tgt_eos_id)
 
     projection_layer = Dense(params.vocab_size, use_bias=False)
 
     decoder = SNetDecoder(
-        decoder_cell, helper, decoder_cell.zero_state(params.batch_size, tf.float32),
+        decoder_cell, helper, decoder_cell.zero_state(batch_size, tf.float32),
         output_layer=projection_layer, params=params)
 
     outputs, _, outputs_length = dynamic_decode(decoder, maximum_iterations=params.answer_max_words)
     logits = outputs.rnn_output
 
-    logits = tf.Print(logits, [outputs.sample_id, labels], summarize=1000)
+    if mode == tf.estimator.ModeKeys.PREDICT:
+        predictions = {
+            'answer': table.lookup(tf.cast(outputs.sample_id, tf.int64))
+        }
+        export_outputs = {
+            'prediction': tf.estimator.export.PredictOutput(predictions)
+        }
+
+        return tf.estimator.EstimatorSpec(mode,
+                                          predictions=predictions,
+                                          export_outputs=export_outputs)
+
+
+    # logits = tf.Print(logits, [outputs.sample_id, labels], summarize=1000)
 
     labels = tf.stop_gradient(labels[:, :tf.reduce_max(outputs_length)])
 
@@ -182,14 +201,37 @@ def model_fn(features, labels, mode, params):
         )
 
     if mode == tf.estimator.ModeKeys.EVAL:
-        table = lookup_ops.index_to_string_table_from_file(params.word_vocab_file)
-
         return EstimatorSpec(
             mode, loss=loss, eval_metric_ops={'rouge-l': rouge_l(outputs.sample_id, labels,
                                                                  outputs_length, features['answer_length'],
                                                                  params, table),
                                               }
         )
+
+
+def serving_input_fn(params):
+    receiver_tensor = {
+        'question': tf.placeholder(tf.string, [None, params.question_max_words]),
+        'context': tf.placeholder(tf.string, [None, params.predict_passage_max_words]),
+        'answer_start': tf.placeholder(tf.float32, [None, params.predict_passage_max_words]),
+        'answer_end': tf.placeholder(tf.float32, [None, params.predict_passage_max_words])
+    }
+
+    word2idx = lookup_ops.index_table_from_file(params.word_vocab_file, key_column_index=0,
+                                                delimiter=" ", default_value=params.vocab_size - 1)
+
+    features = {
+        'passage_words': word2idx.lookup(receiver_tensor['context']),
+        'question_words': word2idx.lookup(receiver_tensor['question']),
+        'passage_length': tf.reduce_sum(tf.cast(tf.not_equal(receiver_tensor["context"], ""), tf.int32), -1),
+        'question_length': tf.reduce_sum(tf.cast(tf.not_equal(receiver_tensor["question"], ""), tf.int32), -1),
+        'answer_start': receiver_tensor['answer_start'],
+        'answer_end': receiver_tensor['answer_end']
+    }
+
+    return tf.estimator.export.ServingInputReceiver(
+        features=features, receiver_tensors=receiver_tensor
+    )
 
 
 @click.command()
@@ -206,10 +248,11 @@ def main(model_dir, train_data, eval_data, vocab_file, hparams):
         batch_size=16,
         max_steps=10000,
         units=150,
-        layers=2,
+        layers=3,
         dropout=0.0,
         question_max_words=30,
         passage_max_words=150,
+        predict_passage_max_words=800,
         answer_max_words=50,
         vocab_size=30000,
         emb_size=300,
@@ -266,13 +309,13 @@ def main(model_dir, train_data, eval_data, vocab_file, hparams):
             mode=tf.estimator.ModeKeys.EVAL,
             batch_size=hparams.batch_size
         ),
-        # exporters=[tf.estimator.LatestExporter(
-        #     name="predict",  # the name of the folder in which the model will be exported to under export
-        #     serving_input_receiver_fn=serving_input_fn,
-        #     exports_to_keep=1,
-        #     as_text=True)],
+        exporters=[tf.estimator.LatestExporter(
+            name="predict",  # the name of the folder in which the model will be exported to under export
+            serving_input_receiver_fn=partial(serving_input_fn, params=hparams),
+            exports_to_keep=1,
+            as_text=True)],
         steps=10,
-        throttle_secs=3600
+        throttle_secs=1200
     )
 
     tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)

@@ -20,10 +20,12 @@ example = namedtuple('example', ['passage_tokens', 'passage_chars',
 
 _known_words = Counter()
 
+stop_words = {"the", ",", ".", "of", "and", "a", "an"}
+
 
 def word_tokenize(sent):
     doc = nlp(sent)
-    words = [token.text for token in doc]
+    words = [token.text for token in doc if token.text not in stop_words]
     for word in words:
         _known_words[word] += 1
     return words
